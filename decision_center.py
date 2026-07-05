@@ -1,5 +1,8 @@
+from html import escape
+
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from utils import DISCLAIMER, format_number
 
@@ -9,17 +12,123 @@ def _tokens() -> dict[str, str]:
         return {
             "template": "plotly_white",
             "text": "#0f172a",
+            "muted": "#475569",
             "panel": "#ffffff",
+            "panel_2": "#f8fafc",
+            "border": "#dbe3ef",
             "grid": "#e2e8f0",
             "accent": "#2563eb",
+            "shadow": "rgba(15, 23, 42, 0.12)",
         }
     return {
         "template": "plotly_dark",
         "text": "#e5edf7",
+        "muted": "#8da2bf",
         "panel": "#07111f",
+        "panel_2": "#0b1628",
+        "border": "#1f2a44",
         "grid": "#1f2a44",
         "accent": "#38bdf8",
+        "shadow": "rgba(0, 0, 0, 0.28)",
     }
+
+
+def _component_css() -> str:
+    tokens = _tokens()
+    return f"""
+    <style>
+        * {{
+            box-sizing: border-box;
+        }}
+        body {{
+            margin: 0;
+            background: transparent;
+            color: {tokens["text"]};
+            font-family: "Inter", "Segoe UI", Arial, sans-serif;
+        }}
+        .stack {{
+            display: grid;
+            gap: 10px;
+            width: 100%;
+            min-width: 0;
+        }}
+        .card, .signal {{
+            width: 100%;
+            min-width: 0;
+            height: auto;
+            border: 1px solid {tokens["border"]};
+            border-radius: 8px;
+            padding: 14px;
+            background: linear-gradient(180deg, {tokens["panel"]}, {tokens["panel_2"]});
+            box-shadow: 0 12px 28px {tokens["shadow"]}, inset 0 1px 0 rgba(255,255,255,0.06);
+            overflow: visible;
+            overflow-wrap: anywhere;
+            word-break: normal;
+            white-space: normal;
+        }}
+        .signal.buy {{
+            border-color: rgba(34, 197, 94, 0.58);
+            background: rgba(34, 197, 94, 0.10);
+        }}
+        .signal.watch {{
+            border-color: rgba(245, 158, 11, 0.62);
+            background: rgba(245, 158, 11, 0.10);
+        }}
+        .signal.sell {{
+            border-color: rgba(239, 68, 68, 0.58);
+            background: rgba(239, 68, 68, 0.10);
+        }}
+        .label {{
+            color: {tokens["muted"]};
+            font-size: 11px;
+            line-height: 1.25;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            overflow-wrap: anywhere;
+        }}
+        .value {{
+            color: {tokens["text"]};
+            margin-top: 5px;
+            font-size: clamp(15px, 2.2vw, 21px);
+            line-height: 1.22;
+            font-weight: 780;
+            overflow-wrap: anywhere;
+            white-space: normal;
+        }}
+        .note {{
+            color: {tokens["muted"]};
+            margin-top: 8px;
+            font-size: 13px;
+            line-height: 1.48;
+            overflow-wrap: anywhere;
+            white-space: normal;
+        }}
+        .holding {{
+            border-color: rgba(56, 189, 248, 0.58);
+            background: rgba(56, 189, 248, 0.11);
+        }}
+        .holding .big {{
+            color: {tokens["text"]};
+            font-size: clamp(22px, 4.6vw, 34px);
+            line-height: 1.12;
+            font-weight: 860;
+            margin-top: 8px;
+            overflow-wrap: anywhere;
+        }}
+        @media (max-width: 520px) {{
+            .card, .signal {{
+                padding: 12px;
+            }}
+            .value {{
+                font-size: 17px;
+            }}
+        }}
+    </style>
+    """
+
+
+def _render_html(body: str, height: int) -> None:
+    components.html(_component_css() + body, height=height, scrolling=False)
 
 
 def confidence_gauge(value: int) -> go.Figure:
@@ -108,9 +217,9 @@ def render_progress_bars(scores: dict[str, int]) -> None:
 
 def _mini_card(label: str, value: str, extra_class: str = "") -> str:
     return f"""
-    <div class="nova-mini-card {extra_class}">
-        <div class="nova-mini-label">{label}</div>
-        <div class="nova-mini-value">{value}</div>
+    <div class="card {extra_class}">
+        <div class="label">{escape(label)}</div>
+        <div class="value">{escape(value)}</div>
     </div>
     """
 
@@ -123,45 +232,52 @@ def render_premium_decision_center(decision: dict[str, object], scores: dict[str
         "SAT": "🔴 SAT RİSKİ",
     }.get(str(decision["main_decision"]), "🟡 BEKLE")
     signal_class = decision.get("signal_class", "nova-signal-watch")
+    component_class = "signal watch"
+    if signal_class == "nova-signal-buy":
+        component_class = "signal buy"
+    elif signal_class == "nova-signal-sell":
+        component_class = "signal sell"
 
     mini_cards = "".join(
         [
             _mini_card("Ana Karar", str(decision["main_decision"])),
             _mini_card("AI Güven Endeksi", f"%{decision['confidence']}"),
-            _mini_card("Beklenen Taşıma Süresi", str(decision["holding_period"]), "nova-holding-card"),
+            _mini_card("Beklenen Taşıma Süresi", str(decision["holding_period"]), "holding"),
             _mini_card("Sat Riski", f"%{decision['sell_probability']}"),
             _mini_card("Stop Loss", format_number(float(decision["stop_loss"]))),
         ]
     )
+
+    center_html = f"""
+    <div class="stack">
+        <div class="{component_class}">
+            <div class="label">NOVA AI DECISION CENTER</div>
+            <div class="value">{escape(title)}</div>
+            <div class="note">
+                İşlem Kalitesi: {escape(str(decision["quality"]))}<br>
+                İşlem Vadesi: {escape(str(decision["horizon"]))}<br>
+                Beklenen Getiri: %{escape(str(decision["expected_return"]))}<br>
+                Risk / Getiri: {escape(str(decision["risk_reward"]))}
+            </div>
+            <div class="note">{escape(DISCLAIMER)}</div>
+        </div>
+        <div class="card holding">
+            <div class="label">⏳ Beklenen Taşıma Süresi</div>
+            <div class="big">{escape(str(decision["holding_period"]))}</div>
+            <div class="note">Kesin satış günü değildir, teknik verilere göre tahmini işlem vadesidir.</div>
+        </div>
+        <div class="card">
+            <div class="label">AI Yorumu</div>
+            <div class="note">{escape(ai_comment(decision, scores))}</div>
+        </div>
+    </div>
+    """
+
     left_col, center_col, right_col = st.columns([0.7, 1.05, 1.35])
     with left_col:
-        st.markdown(f'<div class="nova-vertical-stack">{mini_cards}</div>', unsafe_allow_html=True)
+        _render_html(f'<div class="stack">{mini_cards}</div>', height=395)
     with center_col:
-        st.markdown(
-            f"""
-            <div class="nova-signal {signal_class}">
-                <div class="nova-card-title">NOVA AI DECISION CENTER</div>
-                <div class="nova-card-value">{title}</div>
-                <div class="nova-card-note">
-                    İşlem Kalitesi: {decision["quality"]}<br>
-                    İşlem Vadesi: {decision["horizon"]}<br>
-                    Beklenen Getiri: %{decision["expected_return"]}<br>
-                    Risk / Getiri: {decision["risk_reward"]}
-                </div>
-                <div class="nova-card-note">{DISCLAIMER}</div>
-            </div>
-            <div class="nova-card nova-holding-card">
-                <div class="nova-card-title">⏳ Beklenen Taşıma Süresi</div>
-                <div class="nova-holding-value">{decision["holding_period"]}</div>
-                <div class="nova-card-note">Kesin satış günü değildir, teknik verilere göre tahmini işlem vadesidir.</div>
-            </div>
-            <div class="nova-card">
-                <div class="nova-card-title">AI Yorumu</div>
-                <div class="nova-card-note">{ai_comment(decision, scores)}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        _render_html(center_html, height=470)
     with right_col:
         st.plotly_chart(confidence_gauge(int(decision["confidence"])), width="stretch")
         render_progress_bars(scores)

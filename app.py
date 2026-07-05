@@ -507,20 +507,27 @@ def apply_terminal_theme() -> None:
                 border: 1px solid var(--nova-border);
                 border-radius: 8px;
                 padding: 14px 16px;
+                overflow: visible;
+                min-width: 0;
             }
 
             [data-testid="stMetricLabel"] {
                 color: var(--nova-muted) !important;
+                white-space: normal !important;
+                overflow-wrap: anywhere !important;
             }
 
             [data-testid="stMetricValue"] {
                 color: var(--nova-text) !important;
+                white-space: normal !important;
+                overflow-wrap: anywhere !important;
+                font-size: clamp(1.05rem, 1.9vw, 1.6rem) !important;
             }
 
             [data-testid="stDataFrame"] {
                 border: 1px solid var(--nova-border);
                 border-radius: 8px;
-                overflow: hidden;
+                overflow: auto;
             }
 
             [data-testid="stAlert"] {
