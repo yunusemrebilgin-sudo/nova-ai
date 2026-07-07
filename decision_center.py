@@ -45,6 +45,9 @@ def _component_css() -> str:
             background: transparent;
             color: {tokens["text"]};
             font-family: "Inter", "Segoe UI", Arial, sans-serif;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: hidden;
         }}
         .stack {{
             display: grid;
@@ -63,8 +66,10 @@ def _component_css() -> str:
             box-shadow: 0 12px 28px {tokens["shadow"]}, inset 0 1px 0 rgba(255,255,255,0.06);
             overflow: visible;
             overflow-wrap: anywhere;
-            word-break: normal;
+            word-break: break-word;
             white-space: normal;
+            hyphens: auto;
+            line-height: 1.45;
         }}
         .signal.buy {{
             border-color: rgba(34, 197, 94, 0.58);
@@ -85,6 +90,7 @@ def _component_css() -> str:
             letter-spacing: 0.06em;
             text-transform: uppercase;
             overflow-wrap: anywhere;
+            word-break: break-word;
         }}
         .value {{
             color: {tokens["text"]};
@@ -94,6 +100,7 @@ def _component_css() -> str:
             font-weight: 780;
             overflow-wrap: anywhere;
             white-space: normal;
+            word-break: break-word;
         }}
         .note {{
             color: {tokens["muted"]};
@@ -102,6 +109,7 @@ def _component_css() -> str:
             line-height: 1.48;
             overflow-wrap: anywhere;
             white-space: normal;
+            word-break: break-word;
         }}
         .holding {{
             border-color: rgba(56, 189, 248, 0.58);
@@ -114,6 +122,7 @@ def _component_css() -> str:
             font-weight: 860;
             margin-top: 8px;
             overflow-wrap: anywhere;
+            word-break: break-word;
         }}
         @media (max-width: 520px) {{
             .card, .signal {{
@@ -122,13 +131,16 @@ def _component_css() -> str:
             .value {{
                 font-size: 17px;
             }}
+            .note {{
+                font-size: 12.5px;
+            }}
         }}
     </style>
     """
 
 
 def _render_html(body: str, height: int) -> None:
-    components.html(_component_css() + body, height=height, scrolling=False)
+    components.html(_component_css() + body, height=height, scrolling=True)
 
 
 def confidence_gauge(value: int) -> go.Figure:
@@ -275,9 +287,9 @@ def render_premium_decision_center(decision: dict[str, object], scores: dict[str
 
     left_col, center_col, right_col = st.columns([0.7, 1.05, 1.35])
     with left_col:
-        _render_html(f'<div class="stack">{mini_cards}</div>', height=395)
+        _render_html(f'<div class="stack">{mini_cards}</div>', height=430)
     with center_col:
-        _render_html(center_html, height=470)
+        _render_html(center_html, height=540)
     with right_col:
         st.plotly_chart(confidence_gauge(int(decision["confidence"])), width="stretch")
         render_progress_bars(scores)
