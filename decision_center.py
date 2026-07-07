@@ -309,7 +309,11 @@ def _render_metric_grid(cards: str) -> None:
     )
 
 
-def render_premium_decision_center(decision: dict[str, object], scores: dict[str, int]) -> None:
+def render_premium_decision_center(
+    decision: dict[str, object],
+    scores: dict[str, int],
+    show_diagnostics: bool = True,
+) -> None:
     title = {
         "AL": "🟢 GÜÇLÜ ALIM",
         "TAKİP ET": "🟡 TAKİP ET",
@@ -358,14 +362,21 @@ def render_premium_decision_center(decision: dict[str, object], scores: dict[str
     </div>
     """
 
-    left_col, center_col, right_col = st.columns([0.7, 1.05, 1.35])
-    with left_col:
-        _render_html(f'<div class="stack">{mini_cards}</div>', height=430)
-    with center_col:
-        _render_html(center_html, height=540)
-    with right_col:
-        st.plotly_chart(confidence_gauge(int(decision["confidence"])), width="stretch")
-        render_progress_bars(scores)
+    if show_diagnostics:
+        left_col, center_col, right_col = st.columns([0.7, 1.05, 1.35])
+        with left_col:
+            _render_html(f'<div class="stack">{mini_cards}</div>', height=430)
+        with center_col:
+            _render_html(center_html, height=540)
+        with right_col:
+            st.plotly_chart(confidence_gauge(int(decision["confidence"])), width="stretch")
+            render_progress_bars(scores)
+    else:
+        left_col, center_col = st.columns([0.82, 1.55])
+        with left_col:
+            _render_html(f'<div class="stack">{mini_cards}</div>', height=430)
+        with center_col:
+            _render_html(center_html, height=430)
 
     metric_cards = "".join(
         [
@@ -378,4 +389,5 @@ def render_premium_decision_center(decision: dict[str, object], scores: dict[str
     )
     _render_metric_grid(metric_cards)
 
-    st.plotly_chart(radar_chart(scores), width="stretch")
+    if show_diagnostics:
+        st.plotly_chart(radar_chart(scores), width="stretch")

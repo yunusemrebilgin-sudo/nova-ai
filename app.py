@@ -1529,12 +1529,10 @@ def render_dashboard_page() -> None:
     signal_text, signal_detail, signal_class = decision_signal(general_score)
     support_level, resistance_level = support_resistance(data)
     confidence = nova_confidence_index(latest)
-    advanced_scores = advanced_score_cards(latest, general_score, confidence)
     trade_table = build_trade_horizon_table(latest, general_score, confidence, support_level, resistance_level)
 
     st.markdown("### İşlem Vadeleri")
     render_trade_horizon_cards(trade_table)
-    st.dataframe(trade_table, width="stretch", hide_index=True)
 
     selected_horizon = st.radio(
         "Bu analizi hangi işlem vadesine göre kullanacaksın?",
@@ -1544,8 +1542,6 @@ def render_dashboard_page() -> None:
 
     selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
     selected_signal = str(selected_trade_row["Sinyal"])
-    selected_suitability = int(selected_trade_row["Alım Uygunluğu %"])
-    selected_sell_risk = int(selected_trade_row["Sat Sinyali Yakma Riski %"])
     selected_score = int(selected_trade_row["Nova Skoru"])
     selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
     selected_sell_probability = int(selected_trade_row["Sat Sinyali Yakma Riski %"])
@@ -1582,54 +1578,32 @@ def render_dashboard_page() -> None:
     nova_decision.render_premium_decision_center(
         decision_payload,
         radar_scores_v12,
+        show_diagnostics=False,
     )
 
-    decision_col_1, decision_col_2 = st.columns(2)
-    with decision_col_1:
-        render_decision_text_box(
-            "Bugün almalı mıyım?",
-            today_buy_answer(selected_signal),
-        )
-    with decision_col_2:
-        render_decision_text_box(
-            "Ne olursa sat sinyali oluşur?",
-            "Fiyat EMA50 altına düşerse, MACD negatife dönerse, RSI 70 üstünden aşağı dönerse veya destek kırılırsa sat riski belirgin artar.",
-        )
+    st.markdown("### KPI Kartları")
+    kpi_col_1, kpi_col_2, kpi_col_3, kpi_col_4 = st.columns(4)
+    with kpi_col_1:
+        render_value_card("Nova Score", f"{selected_score}/100")
+    with kpi_col_2:
+        render_value_card("AI Güven", f"%{confidence}")
+    with kpi_col_3:
+        render_value_card("Beklenen Getiri", f"%{selected_expected_return}")
+    with kpi_col_4:
+        render_value_card("Beklenen Taşıma Süresi", str(selected_trade_row["Beklenen Taşıma Süresi"]))
 
-    chart_col, analysis_col = st.columns([2.35, 1])
+    st.markdown("### Gauge + Teknik Barlar")
+    gauge_col, bars_col = st.columns([0.95, 1.45])
+    with gauge_col:
+        st.plotly_chart(create_score_gauge(general_score), width="stretch")
+    with bars_col:
+        nova_decision.render_progress_bars(radar_scores_v12)
 
-    with chart_col:
-        st.plotly_chart(
-            create_price_chart(
-                data,
-                ticker,
-                period_label,
-                support_level,
-                resistance_level,
-                stop_loss,
-                first_target,
-                second_target,
-            ),
-            width="stretch",
-        )
-
-        metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
-        metric_col_4, metric_col_5, metric_col_6 = st.columns(3)
-
-        metric_col_1.metric("Güncel fiyat", format_number(latest["Close"]))
-        metric_col_2.metric("RSI", format_number(latest["RSI14"]))
-        metric_col_3.metric("MACD", format_number(latest["MACD"]))
-        metric_col_4.metric("EMA20", format_number(latest["EMA20"]))
-        metric_col_5.metric("EMA50", format_number(latest["EMA50"]))
-        metric_col_6.metric("Günlük değişim %", f"{latest['DAILY_CHANGE_PCT']:.2f}%")
-        level_col_1, level_col_2 = st.columns(2)
-        level_col_1.metric("Destek (20G)", format_number(support_level))
-        level_col_2.metric("Direnç (20G)", format_number(resistance_level))
-        st.markdown("### NOVA Radar")
+    st.markdown("### Radar + AI Analiz Özeti")
+    radar_col, summary_col = st.columns([1.05, 1.15])
+    with radar_col:
         st.plotly_chart(nova_decision.radar_chart(radar_scores_v12), width="stretch")
-
-    with analysis_col:
-        st.markdown("### Nova Analizi")
+    with summary_col:
         render_today_decision_box(
             signal_text,
             signal_detail,
@@ -1638,59 +1612,22 @@ def render_dashboard_page() -> None:
             support_level,
             resistance_level,
         )
-        st.plotly_chart(create_score_gauge(general_score), width="stretch")
-
-        score_col_1, score_col_2 = st.columns(2)
-        with score_col_1:
-            render_score_card("Teknik Skor", advanced_scores["Teknik Skor"])
-            render_score_card("Momentum Skor", advanced_scores["Momentum Skor"])
-            render_score_card("Hacim Skor", advanced_scores["Hacim Skor"])
-            render_score_card("Volatilite Skor", advanced_scores["Volatilite Skor"])
-        with score_col_2:
-            render_score_card("Temel Skor", advanced_scores["Temel Skor"])
-            render_score_card("Trend Skor", advanced_scores["Trend Skor"])
-            render_score_card("Risk Skor", advanced_scores["Risk Skor"])
-            render_score_card("Genel Nova Skoru", advanced_scores["Genel Nova Skoru"])
-
-        st.markdown(
-            f"""
-            <div class="nova-signal {signal_class}">
-                <div class="nova-card-title">Karar Destek Sinyali</div>
-                <div class="nova-signal-label">{signal_text}</div>
-                <div class="nova-card-note">{signal_detail}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
         st.info(build_analysis(latest, general_score, score_reasons, signal_text))
 
-    st.markdown("### Vade Bazlı Değerlendirme")
-    st.dataframe(build_timeframe_table(data), width="stretch", hide_index=True)
-
-    buy_col, avoid_col = st.columns(2)
-
-    with buy_col:
-        st.markdown("### Ne zaman alınabilir?")
-        st.markdown(
-            f"""
-            <div class="nova-card">
-                <div class="nova-card-note">{buy_conditions_text(latest)}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with avoid_col:
-        st.markdown("### Ne zaman satılabilir veya kaçınılabilir?")
-        st.markdown(
-            f"""
-            <div class="nova-card">
-                <div class="nova-card-note">{sell_or_avoid_text(latest)}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    st.markdown("### Fiyat Grafiği")
+    st.plotly_chart(
+        create_price_chart(
+            data,
+            ticker,
+            period_label,
+            support_level,
+            resistance_level,
+            stop_loss,
+            first_target,
+            second_target,
+        ),
+        width="stretch",
+    )
 
     st.markdown("### Bilgilendirme")
     info_col_1, info_col_2 = st.columns(2)
