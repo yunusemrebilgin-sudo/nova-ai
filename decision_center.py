@@ -293,16 +293,18 @@ def render_premium_decision_center(decision: dict[str, object], scores: dict[str
     with right_col:
         st.plotly_chart(confidence_gauge(int(decision["confidence"])), width="stretch")
         render_progress_bars(scores)
-        metric_cols = st.columns(2)
-        values = [
-            ("🎯 Beklenen Getiri", f"%{decision['expected_return']}"),
-            ("🛑 Stop Loss", format_number(float(decision["stop_loss"]))),
-            ("🎯 İlk Hedef", format_number(float(decision["first_target"]))),
-            ("🚀 İkinci Hedef", format_number(float(decision["second_target"]))),
-            ("⚠ Sat Riski", f"%{decision['sell_probability']}"),
-            ("💰 Risk / Getiri", str(decision["risk_reward"])),
-        ]
-        for idx, (label, value) in enumerate(values):
-            with metric_cols[idx % 2]:
-                st.metric(label, value)
-        st.plotly_chart(radar_chart(scores), width="stretch")
+
+    values = [
+        ("🎯 Beklenen Getiri", f"%{decision['expected_return']}"),
+        ("🛑 Stop Loss", format_number(float(decision["stop_loss"]))),
+        ("🎯 İlk Hedef", format_number(float(decision["first_target"]))),
+        ("🚀 İkinci Hedef", format_number(float(decision["second_target"]))),
+        ("⚠ Sat Riski", f"%{decision['sell_probability']}"),
+        ("💰 Risk / Getiri", str(decision["risk_reward"])),
+    ]
+    metric_cols = st.columns(6)
+    for idx, (label, value) in enumerate(values):
+        with metric_cols[idx]:
+            st.metric(label, value)
+
+    st.plotly_chart(radar_chart(scores), width="stretch")

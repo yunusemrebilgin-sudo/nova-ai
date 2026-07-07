@@ -32,14 +32,7 @@ PERIOD_OPTIONS = {
     "1 Yıl": "1y",
     "2 Yıl": "2y",
 }
-
-PERIOD_MEANINGS = {
-    "1 Ay": "Kısa vade",
-    "3 Ay": "Orta-kısa vade",
-    "6 Ay": "Orta vade",
-    "1 Yıl": "Uzun vade",
-    "2 Yıl": "Yatırım vadesi",
-}
+DEFAULT_PERIOD_LABEL = "6 Ay"
 
 TRADE_HORIZONS = [
     "Günlük işlem",
@@ -93,6 +86,9 @@ def load_bist_symbols() -> pd.DataFrame:
     symbols["symbol"] = symbols["symbol"].astype(str).str.strip().str.upper()
     symbols["name"] = symbols["name"].astype(str).str.strip()
     symbols["sector"] = symbols["sector"].astype(str).str.strip()
+    symbols["search_text"] = (
+        symbols["symbol"].str.lower() + " " + symbols["name"].str.lower() + " " + symbols["sector"].str.lower()
+    )
     return symbols.drop_duplicates(subset=["symbol"]).reset_index(drop=True)
 
 
@@ -102,8 +98,8 @@ def get_bist_symbols_or_stop() -> pd.DataFrame:
     except FileNotFoundError:
         st.error("data/bist_symbols.csv bulunamadı.")
         stop_app()
-    except Exception as exc:
-        st.error(f"BIST hisse listesi okunamadı: {exc}")
+    except Exception:
+        st.error("BIST hisse listesi okunamadı. Lütfen CSV dosyasını kontrol edin.")
         stop_app()
 
 
@@ -112,19 +108,19 @@ def filter_symbols(symbols: pd.DataFrame, query: str) -> pd.DataFrame:
     if not query:
         return symbols
 
-    symbol_match = symbols["symbol"].str.lower().str.contains(query, na=False)
-    name_match = symbols["name"].str.lower().str.contains(query, na=False)
-    sector_match = symbols["sector"].str.lower().str.contains(query, na=False)
-    return symbols[symbol_match | name_match | sector_match]
+    return symbols[symbols["search_text"].str.contains(query, na=False, regex=False)]
+
+
+@st.cache_data(show_spinner=False)
+def build_symbol_labels(symbols: pd.DataFrame) -> dict[str, str]:
+    return {
+        row.symbol: f"{row.symbol} - {row.name} ({row.sector})"
+        for row in symbols[["symbol", "name", "sector"]].itertuples(index=False)
+    }
 
 
 def symbol_label(symbol: str, symbols: pd.DataFrame) -> str:
-    match = symbols[symbols["symbol"] == symbol]
-    if match.empty:
-        return symbol
-
-    row = match.iloc[0]
-    return f"{row['symbol']} - {row['name']} ({row['sector']})"
+    return build_symbol_labels(symbols).get(symbol, symbol)
 
 
 def render_sidebar() -> str:
@@ -1191,10 +1187,10 @@ def load_market_data(ticker: str, period_label: str) -> pd.DataFrame:
             multi_level_index=False,
             timeout=15,
         )
-    except Exception as exc:
+    except Exception:
         st.error(
             "Veri çekilemedi. Hisse kodunu, internet bağlantısını veya veri sağlayıcı erişimini "
-            f"kontrol edin. Teknik detay: {exc}"
+            "kontrol edin."
         )
         stop_app()
 
@@ -1365,24 +1361,6 @@ def render_market_scanner_page() -> None:
     ]
     st.dataframe(scanner_table[visible_columns], width="stretch", hide_index=True)
 
-    with st.expander("Teknik detay kolonları"):
-        st.dataframe(
-            scanner_table[
-                [
-                    "Hisse",
-                    "Nova Skoru",
-                    "EMA20",
-                    "EMA50",
-                    "MACD",
-                    "RSI",
-                    "Son Fiyat",
-                    "Günlük %",
-                ]
-            ],
-            width="stretch",
-            hide_index=True,
-        )
-
     if failed_tickers:
         st.warning("Veri alınamayan hisseler: " + ", ".join(failed_tickers))
 
@@ -1464,6 +1442,22 @@ def render_smart_scanner_page() -> None:
         max_volatility,
     )
 
+    st.markdown("### Taranan Hisseler")
+    visible_columns = [
+        "Sıra",
+        "Hisse",
+        "Şirket",
+        "Nova Score",
+        "AI Güven Endeksi",
+        "Beklenen Getiri %",
+        "Beklenen Taşıma Süresi",
+        "Alım Uygunluğu %",
+        "Sat Riski %",
+        "Trend",
+        "Sonuç",
+    ]
+    st.dataframe(filtered_table[visible_columns], width="stretch", hide_index=True)
+
     st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
     top_rows = filtered_table.head(10)
     if top_rows.empty:
@@ -1485,22 +1479,6 @@ def render_smart_scanner_page() -> None:
                     unsafe_allow_html=True,
                 )
 
-    st.markdown("### Smart Scanner Sonuçları")
-    visible_columns = [
-        "Sıra",
-        "Hisse",
-        "Şirket",
-        "Nova Score",
-        "AI Güven Endeksi",
-        "Beklenen Getiri %",
-        "Beklenen Taşıma Süresi",
-        "Alım Uygunluğu %",
-        "Sat Riski %",
-        "Trend",
-        "Sonuç",
-    ]
-    st.dataframe(filtered_table[visible_columns], width="stretch", hide_index=True)
-
     if failed_tickers:
         st.warning("Veri alınamayan ve atlanan hisseler: " + ", ".join(failed_tickers))
 
@@ -1519,7 +1497,8 @@ def render_dashboard_page() -> None:
     if "manual_ticker" not in st.session_state:
         st.session_state.manual_ticker = st.session_state.quick_ticker
 
-    search_col, control_col_1, control_col_2, control_col_3 = st.columns([1.15, 1.35, 1, 1])
+    period_label = DEFAULT_PERIOD_LABEL
+    search_col, control_col_1, control_col_2 = st.columns([1.1, 1.35, 1])
 
     with search_col:
         dashboard_query = st.text_input("Hisse ara", placeholder="Örn: Türk Hava, ASELS")
@@ -1545,10 +1524,6 @@ def render_dashboard_page() -> None:
     with control_col_2:
         ticker = st.text_input("Manuel hisse kodu", key="manual_ticker").strip().upper()
 
-    with control_col_3:
-        period_label = st.selectbox("Zaman aralığı", list(PERIOD_OPTIONS.keys()), index=2)
-        st.caption(f"{period_label} = {PERIOD_MEANINGS[period_label]}")
-
     st.markdown("### İşlem Vadesi Karar Merkezi")
     selected_horizon = st.radio(
         "Bu analizi hangi işlem vadesine göre kullanacaksın?",
@@ -1569,6 +1544,11 @@ def render_dashboard_page() -> None:
     confidence = nova_confidence_index(latest)
     advanced_scores = advanced_score_cards(latest, general_score, confidence)
     trade_table = build_trade_horizon_table(latest, general_score, confidence, support_level, resistance_level)
+
+    st.markdown("### İşlem Vadeleri")
+    render_trade_horizon_cards(trade_table)
+    st.dataframe(trade_table, width="stretch", hide_index=True)
+
     selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
     selected_signal = str(selected_trade_row["Sinyal"])
     selected_suitability = int(selected_trade_row["Alım Uygunluğu %"])
@@ -1622,10 +1602,6 @@ def render_dashboard_page() -> None:
             "Ne olursa sat sinyali oluşur?",
             "Fiyat EMA50 altına düşerse, MACD negatife dönerse, RSI 70 üstünden aşağı dönerse veya destek kırılırsa sat riski belirgin artar.",
         )
-
-    st.markdown("### İşlem Vadeleri")
-    render_trade_horizon_cards(trade_table)
-    st.dataframe(trade_table, width="stretch", hide_index=True)
 
     chart_col, analysis_col = st.columns([2.35, 1])
 
