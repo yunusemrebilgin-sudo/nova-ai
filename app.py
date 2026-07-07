@@ -642,8 +642,7 @@ def build_analysis(latest: pd.Series, score: int, score_reasons: list[str], sign
         f"Neden? Genel skor {score}/100. {signal_reason_text(latest, score_reasons)} "
         f"{trend} {rsi_text} {momentum}\n\n"
         f"Ne zaman alınabilir? {buy_conditions_text(latest)}\n\n"
-        f"Ne zaman kaçınılmalı? {sell_or_avoid_text(latest)}\n\n"
-        f"{SIGNAL_DISCLAIMER}"
+        f"Ne zaman kaçınılmalı? {sell_or_avoid_text(latest)}"
     )
 
 
@@ -1137,7 +1136,6 @@ def render_decision_text_box(title: str, body: str) -> None:
         <div class="nova-card">
             <div class="nova-card-title">{title}</div>
             <div class="nova-card-note">{body}</div>
-            <div class="nova-card-note">{DECISION_SUPPORT_DISCLAIMER}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1164,7 +1162,6 @@ def render_today_decision_box(
                 Stop seviyesi: {format_number(latest["EMA50"])} (EMA50)<br>
                 Destek: {format_number(support_level)} | Direnç: {format_number(resistance_level)}
             </div>
-            <div class="nova-card-note">{SIGNAL_DISCLAIMER}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1376,6 +1373,7 @@ def render_smart_scanner_page() -> None:
     st.warning(DISCLAIMER)
     bist_symbols = get_bist_symbols_or_stop()
 
+    st.markdown("### Taranacak Hisseler")
     search_query = st.text_input("Hisse ara", placeholder="Örn: Türk Hava, ASELS", key="smart_scanner_search")
     filtered_symbols = filter_symbols(bist_symbols, search_query)
     if filtered_symbols.empty:
@@ -1385,28 +1383,18 @@ def render_smart_scanner_page() -> None:
     options = filtered_symbols["symbol"].tolist()
     default_symbols = bist_symbols["symbol"].head(50).tolist()
     default_selection = [symbol for symbol in default_symbols if symbol in options] or options[:50]
+    symbol_labels = build_symbol_labels(bist_symbols)
+    if "smart_scanner_symbols" in st.session_state:
+        st.session_state.smart_scanner_symbols = [
+            symbol for symbol in st.session_state.smart_scanner_symbols if symbol in options
+        ]
     selected_symbols = st.multiselect(
         "Taranacak hisseler",
         options,
         default=default_selection,
-        format_func=lambda symbol: symbol_label(symbol, bist_symbols),
+        format_func=lambda symbol: symbol_labels.get(symbol, symbol),
         key="smart_scanner_symbols",
     )
-
-    filter_col_1, filter_col_2, filter_col_3, filter_col_4 = st.columns(4)
-    with filter_col_1:
-        trend_filter = st.selectbox("Trend", ["Tümü", "Pozitif", "Nötr", "Negatif"])
-        min_score = st.slider("Min Nova Score", 0, 100, 50)
-    with filter_col_2:
-        momentum_filter = st.selectbox("Momentum", ["Tümü", "Pozitif", "Negatif"])
-        min_confidence = st.slider("Min AI Güven", 0, 100, 45)
-    with filter_col_3:
-        ema_filter = st.checkbox("EMA20 > EMA50", value=False)
-        macd_filter = st.selectbox("MACD", ["Tümü", "Pozitif", "Negatif"])
-    with filter_col_4:
-        rsi_range = st.slider("RSI Aralığı", 0, 100, (30, 70))
-        min_volume_ratio = st.slider("Min Hacim Oranı", 0.0, 3.0, 0.0, 0.1)
-        max_volatility = st.slider("Maks Volatilite", 0.0, 15.0, 15.0, 0.5)
 
     if st.button("Smart Scanner Tara", type="primary"):
         st.session_state.smart_scanner_selected = selected_symbols
@@ -1429,6 +1417,15 @@ def render_smart_scanner_page() -> None:
         st.error("Smart Scanner için veri alınamadı. Lütfen seçimleri veya bağlantıyı kontrol edin.")
         return
 
+    trend_filter = st.session_state.get("smart_filter_trend", "Tümü")
+    momentum_filter = st.session_state.get("smart_filter_momentum", "Tümü")
+    min_score = st.session_state.get("smart_filter_min_score", 50)
+    min_confidence = st.session_state.get("smart_filter_min_confidence", 45)
+    ema_filter = st.session_state.get("smart_filter_ema", False)
+    macd_filter = st.session_state.get("smart_filter_macd", "Tümü")
+    rsi_range = st.session_state.get("smart_filter_rsi", (30, 70))
+    min_volume_ratio = st.session_state.get("smart_filter_volume", 0.0)
+    max_volatility = st.session_state.get("smart_filter_volatility", 15.0)
     filtered_table = nova_scanner.apply_filters(
         scanner_table,
         trend_filter,
@@ -1442,7 +1439,6 @@ def render_smart_scanner_page() -> None:
         max_volatility,
     )
 
-    st.markdown("### Taranan Hisseler")
     visible_columns = [
         "Sıra",
         "Hisse",
@@ -1456,28 +1452,29 @@ def render_smart_scanner_page() -> None:
         "Trend",
         "Sonuç",
     ]
-    st.dataframe(filtered_table[visible_columns], width="stretch", hide_index=True)
 
     st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
     top_rows = filtered_table.head(10)
     if top_rows.empty:
         st.info("Filtrelere uyan hisse bulunamadı.")
     else:
-        top_columns = st.columns(5)
-        for idx, (_, row) in enumerate(top_rows.iterrows()):
-            with top_columns[idx % 5]:
-                st.markdown(
-                    f"""
-                    <div class="nova-card">
-                        <div class="nova-card-title">{row["Hisse"]}</div>
-                        <div class="nova-card-value">{row["Sonuç"]}</div>
-                        <div class="nova-card-note">Nova Score: {int(row["Nova Score"])}/100</div>
-                        <div class="nova-card-note">AI Güven: %{int(row["AI Güven Endeksi"])}</div>
-                        <div class="nova-card-note">Beklenen Getiri: %{row["Beklenen Getiri %"]}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+        st.dataframe(top_rows[visible_columns], width="stretch", hide_index=True)
+
+    st.markdown("### Filtreler")
+    filter_col_1, filter_col_2, filter_col_3, filter_col_4 = st.columns(4)
+    with filter_col_1:
+        st.selectbox("Trend", ["Tümü", "Pozitif", "Nötr", "Negatif"], key="smart_filter_trend")
+        st.slider("Min Nova Score", 0, 100, 50, key="smart_filter_min_score")
+    with filter_col_2:
+        st.selectbox("Momentum", ["Tümü", "Pozitif", "Negatif"], key="smart_filter_momentum")
+        st.slider("Min AI Güven", 0, 100, 45, key="smart_filter_min_confidence")
+    with filter_col_3:
+        st.checkbox("EMA20 > EMA50", value=False, key="smart_filter_ema")
+        st.selectbox("MACD", ["Tümü", "Pozitif", "Negatif"], key="smart_filter_macd")
+    with filter_col_4:
+        st.slider("RSI Aralığı", 0, 100, (30, 70), key="smart_filter_rsi")
+        st.slider("Min Hacim Oranı", 0.0, 3.0, 0.0, 0.1, key="smart_filter_volume")
+        st.slider("Maks Volatilite", 0.0, 15.0, 15.0, 0.5, key="smart_filter_volatility")
 
     if failed_tickers:
         st.warning("Veri alınamayan ve atlanan hisseler: " + ", ".join(failed_tickers))
@@ -1488,8 +1485,6 @@ def render_smart_scanner_page() -> None:
 def render_dashboard_page() -> None:
     st.title("NOVA AI")
     st.markdown('<div class="nova-subtitle">Analyze Smarter. Decide Better.</div>', unsafe_allow_html=True)
-    st.info("Bu sürümde BIST hisse listesi yerel CSV dosyasından okunur.")
-    st.warning(DISCLAIMER)
     bist_symbols = get_bist_symbols_or_stop()
 
     if "quick_ticker" not in st.session_state:
@@ -1524,14 +1519,6 @@ def render_dashboard_page() -> None:
     with control_col_2:
         ticker = st.text_input("Manuel hisse kodu", key="manual_ticker").strip().upper()
 
-    st.markdown("### İşlem Vadesi Karar Merkezi")
-    selected_horizon = st.radio(
-        "Bu analizi hangi işlem vadesine göre kullanacaksın?",
-        TRADE_HORIZONS,
-        horizontal=True,
-    )
-    st.warning(DECISION_SUPPORT_DISCLAIMER)
-
     if not ticker:
         st.info("Analiz için bir hisse kodu girin.")
         stop_app()
@@ -1548,6 +1535,12 @@ def render_dashboard_page() -> None:
     st.markdown("### İşlem Vadeleri")
     render_trade_horizon_cards(trade_table)
     st.dataframe(trade_table, width="stretch", hide_index=True)
+
+    selected_horizon = st.radio(
+        "Bu analizi hangi işlem vadesine göre kullanacaksın?",
+        TRADE_HORIZONS,
+        horizontal=True,
+    )
 
     selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
     selected_signal = str(selected_trade_row["Sinyal"])
@@ -1665,7 +1658,6 @@ def render_dashboard_page() -> None:
                 <div class="nova-card-title">Karar Destek Sinyali</div>
                 <div class="nova-signal-label">{signal_text}</div>
                 <div class="nova-card-note">{signal_detail}</div>
-                <div class="nova-card-note">{SIGNAL_DISCLAIMER}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1684,7 +1676,6 @@ def render_dashboard_page() -> None:
             f"""
             <div class="nova-card">
                 <div class="nova-card-note">{buy_conditions_text(latest)}</div>
-                <div class="nova-card-note">{SIGNAL_DISCLAIMER}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1696,13 +1687,33 @@ def render_dashboard_page() -> None:
             f"""
             <div class="nova-card">
                 <div class="nova-card-note">{sell_or_avoid_text(latest)}</div>
-                <div class="nova-card-note">{SIGNAL_DISCLAIMER}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    st.caption(DISCLAIMER)
+    st.markdown("### Bilgilendirme")
+    info_col_1, info_col_2 = st.columns(2)
+    with info_col_1:
+        st.markdown(
+            """
+            <div class="nova-card nova-info-card">
+                <div class="nova-card-title">Veri Kaynağı</div>
+                <div class="nova-card-note">Bu sürümde BIST hisse listesi yerel CSV dosyasından okunur.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with info_col_2:
+        st.markdown(
+            f"""
+            <div class="nova-card nova-info-card">
+                <div class="nova-card-title">Yasal Bilgilendirme</div>
+                <div class="nova-card-note">{DISCLAIMER}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_coming_soon_page(page: str) -> None:

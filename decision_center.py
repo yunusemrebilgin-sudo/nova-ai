@@ -236,6 +236,79 @@ def _mini_card(label: str, value: str, extra_class: str = "") -> str:
     """
 
 
+def _metric_card(label: str, value: str) -> str:
+    return f"""
+    <div class="dc-metric-card">
+        <div class="label">{escape(label)}</div>
+        <div class="value">{escape(value)}</div>
+    </div>
+    """
+
+
+def _render_metric_grid(cards: str) -> None:
+    tokens = _tokens()
+    st.markdown(
+        f"""
+        <style>
+            .dc-metric-grid {{
+                display: grid;
+                grid-template-columns: repeat(5, minmax(0, 1fr));
+                gap: 10px;
+                width: 100%;
+                min-width: 0;
+                margin: 0.65rem 0 0.35rem;
+            }}
+            .dc-metric-card {{
+                min-width: 0;
+                min-height: 104px;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                border: 1px solid {tokens["border"]};
+                border-radius: 8px;
+                padding: 14px;
+                background: linear-gradient(180deg, {tokens["panel"]}, {tokens["panel_2"]});
+                box-shadow: 0 12px 28px {tokens["shadow"]}, inset 0 1px 0 rgba(255,255,255,0.06);
+                overflow-wrap: anywhere;
+                word-break: break-word;
+            }}
+            .dc-metric-card .label {{
+                color: {tokens["muted"]};
+                font-size: 11px;
+                line-height: 1.25;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+                overflow-wrap: anywhere;
+            }}
+            .dc-metric-card .value {{
+                color: {tokens["text"]};
+                margin-top: 7px;
+                font-size: clamp(18px, 2vw, 26px);
+                line-height: 1.18;
+                font-weight: 820;
+                overflow-wrap: anywhere;
+            }}
+            @media (max-width: 520px) {{
+                .dc-metric-grid {{
+                    grid-template-columns: 1fr;
+                }}
+                .dc-metric-card {{
+                    min-height: 82px;
+                    padding: 12px;
+                }}
+            }}
+            @media (min-width: 521px) and (max-width: 980px) {{
+                .dc-metric-grid {{
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }}
+            }}
+        </style>
+        <div class="dc-metric-grid">{cards}</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_premium_decision_center(decision: dict[str, object], scores: dict[str, int]) -> None:
     title = {
         "AL": "🟢 GÜÇLÜ ALIM",
@@ -294,17 +367,15 @@ def render_premium_decision_center(decision: dict[str, object], scores: dict[str
         st.plotly_chart(confidence_gauge(int(decision["confidence"])), width="stretch")
         render_progress_bars(scores)
 
-    values = [
-        ("🎯 Beklenen Getiri", f"%{decision['expected_return']}"),
-        ("🛑 Stop Loss", format_number(float(decision["stop_loss"]))),
-        ("🎯 İlk Hedef", format_number(float(decision["first_target"]))),
-        ("🚀 İkinci Hedef", format_number(float(decision["second_target"]))),
-        ("⚠ Sat Riski", f"%{decision['sell_probability']}"),
-        ("💰 Risk / Getiri", str(decision["risk_reward"])),
-    ]
-    metric_cols = st.columns(6)
-    for idx, (label, value) in enumerate(values):
-        with metric_cols[idx]:
-            st.metric(label, value)
+    metric_cards = "".join(
+        [
+            _metric_card("Beklenen Getiri", f"%{decision['expected_return']}"),
+            _metric_card("Stop Loss", format_number(float(decision["stop_loss"]))),
+            _metric_card("İlk Hedef", format_number(float(decision["first_target"]))),
+            _metric_card("İkinci Hedef", format_number(float(decision["second_target"]))),
+            _metric_card("Risk / Getiri", str(decision["risk_reward"])),
+        ]
+    )
+    _render_metric_grid(metric_cards)
 
     st.plotly_chart(radar_chart(scores), width="stretch")

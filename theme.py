@@ -88,6 +88,7 @@ def apply_terminal_theme() -> None:
                 --nova-radius: 8px;
                 --nova-card-padding: 16px;
                 --nova-shadow: 0 14px 34px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255,255,255,0.06);
+                --nova-section-gap: 0.9rem;
             }
 
             .stApp {
@@ -149,8 +150,8 @@ def apply_terminal_theme() -> None:
             }
 
             .block-container {
-                padding-top: 1.8rem;
-                padding-bottom: 2rem;
+                padding-top: 1.25rem;
+                padding-bottom: 1.5rem;
                 max-width: 1680px;
             }
 
@@ -166,6 +167,8 @@ def apply_terminal_theme() -> None:
 
             h3 {
                 font-weight: 740 !important;
+                margin-top: 1.05rem !important;
+                margin-bottom: 0.55rem !important;
             }
 
             .nova-logo {
@@ -196,11 +199,20 @@ def apply_terminal_theme() -> None:
 
             .nova-subtitle {
                 margin-top: -0.6rem;
-                margin-bottom: 1.1rem;
+                margin-bottom: 0.75rem;
                 color: var(--nova-muted);
                 font-size: 1.05rem;
                 line-height: 1.45;
                 overflow-wrap: anywhere;
+            }
+
+            [data-testid="stVerticalBlock"] {
+                gap: var(--nova-section-gap);
+            }
+
+            [data-testid="stHorizontalBlock"] {
+                gap: 0.85rem;
+                align-items: stretch;
             }
 
             .nova-card,
@@ -224,6 +236,9 @@ def apply_terminal_theme() -> None:
             .nova-card {
                 padding: var(--nova-card-padding);
                 min-height: 100%;
+                display: flex;
+                flex-direction: column;
+                justify-content: flex-start;
             }
 
             .nova-card + .nova-card {
@@ -259,6 +274,10 @@ def apply_terminal_theme() -> None:
                 overflow-wrap: anywhere;
             }
 
+            .nova-info-card {
+                min-height: 112px;
+            }
+
             .nova-signal {
                 padding: 18px;
                 margin-top: 0.75rem;
@@ -290,12 +309,19 @@ def apply_terminal_theme() -> None:
 
             [data-testid="column"] {
                 min-width: 0;
+                display: flex;
+                flex-direction: column;
             }
 
             [data-testid="column"] > div,
             [data-testid="stVerticalBlock"] > div:has(> .nova-card),
             [data-testid="stVerticalBlock"] > div:has(> .nova-signal) {
                 min-width: 0;
+            }
+
+            [data-testid="column"] [data-testid="stMarkdownContainer"]:has(.nova-card),
+            [data-testid="column"] [data-testid="stMarkdownContainer"]:has(.nova-signal) {
+                height: 100%;
             }
 
             .nova-mini-card {
@@ -398,6 +424,10 @@ def apply_terminal_theme() -> None:
 
             [data-testid="stMetric"] {
                 padding: 14px 16px;
+                min-height: 96px;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
             }
 
             [data-testid="stMetricLabel"] {
@@ -419,6 +449,7 @@ def apply_terminal_theme() -> None:
                 overflow: auto;
                 max-width: 100%;
                 background: var(--nova-panel);
+                box-shadow: 0 10px 28px rgba(15, 23, 42, 0.10);
             }
 
             [data-testid="stDataFrame"] * {
@@ -429,6 +460,9 @@ def apply_terminal_theme() -> None:
                 background-color: var(--nova-panel-2);
                 color: var(--nova-text);
                 border: 1px solid var(--nova-border);
+                border-radius: var(--nova-radius);
+                padding-top: 0.7rem;
+                padding-bottom: 0.7rem;
             }
 
             @media (max-width: 900px) {
