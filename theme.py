@@ -278,6 +278,10 @@ def apply_terminal_theme() -> None:
                 min-height: 112px;
             }
 
+            .nova-button-spacer {
+                height: 1.72rem;
+            }
+
             .nova-signal {
                 padding: 18px;
                 margin-top: 0.75rem;

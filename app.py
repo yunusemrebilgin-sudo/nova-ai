@@ -2,6 +2,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from html import escape
 from pathlib import Path
 from plotly.subplots import make_subplots
 
@@ -1288,16 +1289,189 @@ def render_top_stock_card(row: pd.Series) -> None:
     )
 
 
+def scan_badge_class(value: object) -> str:
+    if isinstance(value, (int, float)):
+        if value <= 35:
+            return "positive"
+        if value >= 65:
+            return "negative"
+        return "neutral"
+
+    normalized = str(value).strip().lower()
+    if any(token in normalized for token in ["pozitif", "al", "güçlü", "düşük", "low"]):
+        return "positive"
+    if any(token in normalized for token in ["negatif", "sat", "yüksek", "high"]):
+        return "negative"
+    try:
+        numeric_value = float(normalized.replace("%", "").replace(",", "."))
+    except ValueError:
+        numeric_value = None
+    if numeric_value is not None:
+        if numeric_value <= 35:
+            return "positive"
+        if numeric_value >= 65:
+            return "negative"
+    return "neutral"
+
+
+def render_badge(value: object) -> str:
+    text = escape(str(value))
+    return f'<span class="nova-scan-badge {scan_badge_class(value)}">{text}</span>'
+
+
+def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
+    header = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    rows = []
+    for _, row in table[columns].iterrows():
+        cells = []
+        for column in columns:
+            value = row[column]
+            if column == "Nova Skoru":
+                cells.append(f'<td><span class="nova-score-strong">{int(value)}/100</span></td>')
+            elif column in {"Trend", "Sinyal", "Risk"}:
+                cells.append(f"<td>{render_badge(value)}</td>")
+            elif column in {"RSI", "Son Fiyat", "Günlük %"}:
+                cells.append(f"<td>{escape(format_number(float(value)))}</td>")
+            else:
+                cells.append(f"<td>{escape(str(value))}</td>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    st.markdown(
+        f"""
+        <style>
+            .nova-scan-table-wrap {{
+                width: 100%;
+                overflow-x: auto;
+                border: 1px solid var(--nova-border);
+                border-radius: var(--nova-radius);
+                background: var(--nova-card-bg);
+                box-shadow: var(--nova-shadow);
+            }}
+            .nova-scan-table {{
+                width: 100%;
+                border-collapse: collapse;
+                min-width: 920px;
+                color: var(--nova-text);
+            }}
+            .nova-scan-table thead tr {{
+                background: rgba(15, 23, 42, 0.92);
+            }}
+            .nova-scan-table th {{
+                padding: 13px 14px;
+                color: var(--nova-muted);
+                font-size: 0.74rem;
+                line-height: 1.25;
+                text-align: left;
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+                border-bottom: 1px solid var(--nova-border);
+                white-space: nowrap;
+            }}
+            .nova-scan-table td {{
+                padding: 14px;
+                color: var(--nova-text);
+                font-size: 0.9rem;
+                line-height: 1.35;
+                border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+                vertical-align: middle;
+                white-space: nowrap;
+            }}
+            .nova-scan-table tbody tr {{
+                background: rgba(15, 23, 42, 0.34);
+                transition: background 160ms ease, transform 160ms ease;
+            }}
+            .nova-scan-table tbody tr:nth-child(even) {{
+                background: rgba(15, 23, 42, 0.20);
+            }}
+            .nova-scan-table tbody tr:hover {{
+                background: rgba(56, 189, 248, 0.11);
+            }}
+            .nova-score-strong {{
+                display: inline-block;
+                color: var(--nova-text);
+                font-size: 1.12rem;
+                font-weight: 840;
+                line-height: 1;
+            }}
+            .nova-scan-badge {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 76px;
+                border-radius: 999px;
+                padding: 5px 10px;
+                font-size: 0.76rem;
+                font-weight: 760;
+                line-height: 1;
+                border: 1px solid transparent;
+            }}
+            .nova-scan-badge.positive {{
+                color: #bbf7d0;
+                background: rgba(34, 197, 94, 0.16);
+                border-color: rgba(34, 197, 94, 0.42);
+            }}
+            .nova-scan-badge.neutral {{
+                color: #fde68a;
+                background: rgba(245, 158, 11, 0.15);
+                border-color: rgba(245, 158, 11, 0.42);
+            }}
+            .nova-scan-badge.negative {{
+                color: #fecaca;
+                background: rgba(239, 68, 68, 0.15);
+                border-color: rgba(239, 68, 68, 0.40);
+            }}
+            @media (max-width: 700px) {{
+                .nova-scan-table th,
+                .nova-scan-table td {{
+                    padding: 11px 12px;
+                }}
+            }}
+        </style>
+        <div class="nova-scan-table-wrap">
+            <table class="nova-scan-table">
+                <thead><tr>{header}</tr></thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_scanner_disclosure() -> None:
+    st.markdown("### Bilgilendirme")
+    info_col_1, info_col_2 = st.columns(2)
+    with info_col_1:
+        st.markdown(
+            """
+            <div class="nova-card nova-info-card">
+                <div class="nova-card-title">Veri Kaynağı</div>
+                <div class="nova-card-note">Bu sürümde BIST hisse listesi yerel CSV dosyasından okunur.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with info_col_2:
+        st.markdown(
+            f"""
+            <div class="nova-card nova-info-card">
+                <div class="nova-card-title">Yasal Bilgilendirme</div>
+                <div class="nova-card-note">{DISCLAIMER}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_market_scanner_page() -> None:
     st.title("Piyasa Tarayıcı")
     st.markdown(
         '<div class="nova-subtitle">Nova BIST hisselerini tarar ve teknik skora göre fırsat listesini oluşturur.</div>',
         unsafe_allow_html=True,
     )
-    st.info("Bu sürümde BIST hisse listesi yerel CSV dosyasından okunur.")
-    st.warning(DISCLAIMER)
     bist_symbols = get_bist_symbols_or_stop()
 
+    st.markdown("### Taranacak Hisseler")
     scanner_query = st.text_input("Hisse ara", placeholder="Örn: Türk Hava, ASELS", key="scanner_symbol_search")
     filtered_symbols = filter_symbols(bist_symbols, scanner_query)
     if filtered_symbols.empty:
@@ -1310,14 +1484,17 @@ def render_market_scanner_page() -> None:
     if not default_selection and scanner_options:
         default_selection = scanner_options[:50]
 
-    selected_symbols = st.multiselect(
-        "Taranacak hisseler",
-        scanner_options,
-        default=default_selection,
-        format_func=lambda symbol: symbol_label(symbol, bist_symbols),
-    )
-
-    scan_requested = st.button("Seçili hisseleri tara", type="primary")
+    picker_col, action_col = st.columns([3.4, 0.95])
+    with picker_col:
+        selected_symbols = st.multiselect(
+            "Taranacak hisseler",
+            scanner_options,
+            default=default_selection,
+            format_func=lambda symbol: symbol_label(symbol, bist_symbols),
+        )
+    with action_col:
+        st.markdown('<div class="nova-button-spacer"></div>', unsafe_allow_html=True)
+        scan_requested = st.button("Seçili Hisseleri Tara", type="primary", width="stretch")
     if scan_requested:
         st.session_state.scanner_selected_symbols = selected_symbols
 
@@ -1356,12 +1533,12 @@ def render_market_scanner_page() -> None:
         "Günlük %",
         "Risk",
     ]
-    st.dataframe(scanner_table[visible_columns], width="stretch", hide_index=True)
+    render_nova_bist_table(scanner_table, visible_columns)
 
     if failed_tickers:
         st.warning("Veri alınamayan hisseler: " + ", ".join(failed_tickers))
 
-    st.caption(DISCLAIMER)
+    render_scanner_disclosure()
 
 
 def render_smart_scanner_page() -> None:
@@ -1370,7 +1547,6 @@ def render_smart_scanner_page() -> None:
         '<div class="nova-subtitle">BIST hisselerini Nova AI karar motoru ile filtreler ve fırsat listesini oluşturur.</div>',
         unsafe_allow_html=True,
     )
-    st.warning(DISCLAIMER)
     bist_symbols = get_bist_symbols_or_stop()
 
     st.markdown("### Taranacak Hisseler")
@@ -1396,7 +1572,12 @@ def render_smart_scanner_page() -> None:
         key="smart_scanner_symbols",
     )
 
-    if st.button("Smart Scanner Tara", type="primary"):
+    action_col, filter_hint_col = st.columns([0.9, 3.1])
+    with action_col:
+        scan_requested = st.button("Seçili Hisseleri Tara", type="primary", width="stretch")
+    with filter_hint_col:
+        st.caption("Filtreler sayfanın altında sonuçlarla birlikte çalışır.")
+    if scan_requested:
         st.session_state.smart_scanner_selected = selected_symbols
 
     if "smart_scanner_selected" not in st.session_state:
@@ -1453,12 +1634,39 @@ def render_smart_scanner_page() -> None:
         "Sonuç",
     ]
 
-    st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
-    top_rows = filtered_table.head(10)
+    st.markdown("### 🔥 Bugünün En Güçlü 5 Hissesi")
+    top_rows = filtered_table.head(5)
     if top_rows.empty:
         st.info("Filtrelere uyan hisse bulunamadı.")
     else:
-        st.dataframe(top_rows[visible_columns], width="stretch", hide_index=True)
+        top_scan_table = top_rows.rename(columns={"Nova Score": "Nova Skoru", "Sonuç": "Sinyal"})
+        render_nova_bist_table(top_scan_table, [
+            "Hisse",
+            "Nova Skoru",
+            "Sinyal",
+            "AI Güven Endeksi",
+            "Beklenen Getiri %",
+            "Beklenen Taşıma Süresi",
+            "Trend",
+        ])
+
+    st.markdown("### Nova BIST Tarama Tablosu")
+    smart_table = filtered_table.rename(columns={"Nova Score": "Nova Skoru", "Sonuç": "Sinyal", "Sat Riski %": "Risk"})
+    smart_visible_columns = [
+        "Hisse",
+        "Nova Skoru",
+        "Sinyal",
+        "AI Güven Endeksi",
+        "Beklenen Getiri %",
+        "Beklenen Taşıma Süresi",
+        "Alım Uygunluğu %",
+        "Risk",
+        "Trend",
+    ]
+    if smart_table.empty:
+        st.info("Filtrelere uyan hisse bulunamadı.")
+    else:
+        render_nova_bist_table(smart_table, smart_visible_columns)
 
     st.markdown("### Filtreler")
     filter_col_1, filter_col_2, filter_col_3, filter_col_4 = st.columns(4)
@@ -1479,7 +1687,7 @@ def render_smart_scanner_page() -> None:
     if failed_tickers:
         st.warning("Veri alınamayan ve atlanan hisseler: " + ", ".join(failed_tickers))
 
-    st.caption(DISCLAIMER)
+    render_scanner_disclosure()
 
 
 def render_dashboard_page() -> None:
