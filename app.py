@@ -2,7 +2,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
-import time
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -1219,175 +1218,6 @@ def load_market_data(ticker: str, period_label: str) -> pd.DataFrame:
     return data
 
 
-def dashboard_cache_key(ticker: str, period_label: str) -> tuple[str, str]:
-    return ticker.strip().upper(), period_label
-
-
-def get_dashboard_analysis(ticker: str, period_label: str) -> dict[str, object]:
-    cache = st.session_state.setdefault("dashboard_analysis_cache", {})
-    key = dashboard_cache_key(ticker, period_label)
-    if key in cache:
-        st.session_state.dashboard_last_cache_hit = True
-        return cache[key]
-
-    timings: dict[str, float] = {}
-
-    started = time.perf_counter()
-    data = load_market_data(ticker, period_label)
-    timings["veri_indirme_indikator"] = time.perf_counter() - started
-
-    started = time.perf_counter()
-    latest = data.iloc[-1]
-    general_score, score_reasons = calculate_general_score(latest)
-    signal_text, signal_detail, signal_class = decision_signal(general_score)
-    support_level, resistance_level = support_resistance(data)
-    confidence = nova_confidence_index(latest)
-    trade_table = build_trade_horizon_table(latest, general_score, confidence, support_level, resistance_level)
-    radar_scores = nova_analytics.score_breakdown(latest, general_score, confidence)
-    analysis_text = build_analysis(latest, general_score, score_reasons, signal_text)
-    timings["skor_karar_hesaplari"] = time.perf_counter() - started
-
-    analysis = {
-        "ticker": ticker,
-        "period_label": period_label,
-        "data": data,
-        "latest": latest,
-        "general_score": general_score,
-        "score_reasons": score_reasons,
-        "signal_text": signal_text,
-        "signal_detail": signal_detail,
-        "signal_class": signal_class,
-        "support_level": support_level,
-        "resistance_level": resistance_level,
-        "confidence": confidence,
-        "trade_table": trade_table,
-        "radar_scores": radar_scores,
-        "analysis_text": analysis_text,
-        "timings": timings,
-    }
-    cache[key] = analysis
-    st.session_state.dashboard_last_cache_hit = False
-    return analysis
-
-
-def get_dashboard_horizon_state(analysis: dict[str, object], selected_horizon: str) -> dict[str, object]:
-    cache = st.session_state.setdefault("dashboard_horizon_cache", {})
-    data = analysis["data"]
-    latest = analysis["latest"]
-    key = (
-        str(analysis["ticker"]).strip().upper(),
-        str(analysis["period_label"]),
-        selected_horizon,
-        str(data.index[-1]),
-    )
-    if key in cache:
-        return cache[key]
-
-    trade_table = analysis["trade_table"]
-    selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
-    selected_signal = str(selected_trade_row["Sinyal"])
-    selected_score = int(selected_trade_row["Nova Skoru"])
-    selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
-    selected_sell_probability = int(selected_trade_row["Sat Sinyali Yakma Riski %"])
-    first_target, second_target, stop_loss, risk_reward = target_stop_levels(
-        latest,
-        float(analysis["support_level"]),
-        float(analysis["resistance_level"]),
-        selected_expected_return,
-    )
-    main_decision = main_decision_label(selected_signal, int(analysis["confidence"]), selected_sell_probability)
-    decision_class = "nova-signal-buy"
-    if main_decision in {"BEKLE", "TAKİP ET"}:
-        decision_class = "nova-signal-watch"
-    elif main_decision == "SAT":
-        decision_class = "nova-signal-sell"
-
-    decision_payload = {
-        "signal_class": decision_class,
-        "main_decision": main_decision,
-        "confidence": int(analysis["confidence"]),
-        "quality": trade_quality(int(analysis["confidence"]), selected_sell_probability),
-        "horizon": selected_horizon,
-        "holding_period": selected_trade_row["Beklenen Taşıma Süresi"],
-        "expected_return": selected_expected_return,
-        "sell_probability": selected_sell_probability,
-        "risk_reward": risk_reward,
-        "first_target": first_target,
-        "second_target": second_target,
-        "stop_loss": stop_loss,
-        "support": float(analysis["support_level"]),
-        "resistance": float(analysis["resistance_level"]),
-    }
-    horizon_state = {
-        "selected_trade_row": selected_trade_row,
-        "selected_score": selected_score,
-        "selected_expected_return": selected_expected_return,
-        "selected_sell_probability": selected_sell_probability,
-        "first_target": first_target,
-        "second_target": second_target,
-        "stop_loss": stop_loss,
-        "risk_reward": risk_reward,
-        "decision_payload": decision_payload,
-    }
-    cache[key] = horizon_state
-    return horizon_state
-
-
-def session_score_gauge(score: int, theme_mode: str) -> go.Figure:
-    cache = st.session_state.setdefault("dashboard_figure_cache", {})
-    key = ("score_gauge", score, theme_mode)
-    if key not in cache:
-        cache[key] = create_score_gauge(score)
-    return cache[key]
-
-
-def session_radar_chart(scores: dict[str, int], theme_mode: str) -> go.Figure:
-    cache = st.session_state.setdefault("dashboard_figure_cache", {})
-    key = ("radar_chart", tuple(scores.items()), theme_mode)
-    if key not in cache:
-        cache[key] = nova_decision.radar_chart(scores)
-    return cache[key]
-
-
-def session_price_chart(
-    data: pd.DataFrame,
-    ticker: str,
-    period_label: str,
-    support_level: float,
-    resistance_level: float,
-    stop_loss: float | None,
-    first_target: float | None,
-    second_target: float | None,
-    theme_mode: str,
-) -> go.Figure:
-    cache = st.session_state.setdefault("dashboard_figure_cache", {})
-    key = (
-        "price_chart",
-        ticker.strip().upper(),
-        period_label,
-        str(data.index[-1]),
-        len(data),
-        round(float(support_level), 4),
-        round(float(resistance_level), 4),
-        round(float(stop_loss), 4) if stop_loss is not None else None,
-        round(float(first_target), 4) if first_target is not None else None,
-        round(float(second_target), 4) if second_target is not None else None,
-        theme_mode,
-    )
-    if key not in cache:
-        cache[key] = create_price_chart(
-            data,
-            ticker,
-            period_label,
-            support_level,
-            resistance_level,
-            stop_loss,
-            first_target,
-            second_target,
-        )
-    return cache[key]
-
-
 def prepare_scanner_row(ticker: str, raw_data: pd.DataFrame) -> dict[str, object] | None:
     required_columns = {"Open", "High", "Low", "Close", "Volume"}
     if raw_data.empty or not required_columns.issubset(raw_data.columns):
@@ -1931,17 +1761,13 @@ def render_dashboard_page() -> None:
         st.info("Analiz için bir hisse kodu girin.")
         stop_app()
 
-    analysis = get_dashboard_analysis(ticker, period_label)
-    data = analysis["data"]
-    latest = analysis["latest"]
-    general_score = int(analysis["general_score"])
-    signal_text = str(analysis["signal_text"])
-    signal_detail = str(analysis["signal_detail"])
-    signal_class = str(analysis["signal_class"])
-    support_level = float(analysis["support_level"])
-    resistance_level = float(analysis["resistance_level"])
-    confidence = int(analysis["confidence"])
-    trade_table = analysis["trade_table"]
+    data = load_market_data(ticker, period_label)
+    latest = data.iloc[-1]
+    general_score, score_reasons = calculate_general_score(latest)
+    signal_text, signal_detail, signal_class = decision_signal(general_score)
+    support_level, resistance_level = support_resistance(data)
+    confidence = nova_confidence_index(latest)
+    trade_table = build_trade_horizon_table(latest, general_score, confidence, support_level, resistance_level)
 
     st.markdown("### İşlem Vadeleri")
     render_trade_horizon_cards(trade_table)
@@ -1952,16 +1778,41 @@ def render_dashboard_page() -> None:
         horizontal=True,
     )
 
-    horizon_state = get_dashboard_horizon_state(analysis, selected_horizon)
-    selected_trade_row = horizon_state["selected_trade_row"]
-    selected_score = int(horizon_state["selected_score"])
-    selected_expected_return = float(horizon_state["selected_expected_return"])
-    first_target = float(horizon_state["first_target"])
-    second_target = float(horizon_state["second_target"])
-    stop_loss = float(horizon_state["stop_loss"])
-    decision_payload = horizon_state["decision_payload"]
-    radar_scores_v12 = analysis["radar_scores"]
-    theme_mode = st.session_state.get("theme_mode", "dark")
+    selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
+    selected_signal = str(selected_trade_row["Sinyal"])
+    selected_score = int(selected_trade_row["Nova Skoru"])
+    selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
+    selected_sell_probability = int(selected_trade_row["Sat Sinyali Yakma Riski %"])
+    first_target, second_target, stop_loss, risk_reward = target_stop_levels(
+        latest,
+        support_level,
+        resistance_level,
+        selected_expected_return,
+    )
+    main_decision = main_decision_label(selected_signal, confidence, selected_sell_probability)
+    decision_class = "nova-signal-buy"
+    if main_decision in {"BEKLE", "TAKİP ET"}:
+        decision_class = "nova-signal-watch"
+    elif main_decision == "SAT":
+        decision_class = "nova-signal-sell"
+
+    decision_payload = {
+        "signal_class": decision_class,
+        "main_decision": main_decision,
+        "confidence": confidence,
+        "quality": trade_quality(confidence, selected_sell_probability),
+        "horizon": selected_horizon,
+        "holding_period": selected_trade_row["Beklenen Taşıma Süresi"],
+        "expected_return": selected_expected_return,
+        "sell_probability": selected_sell_probability,
+        "risk_reward": risk_reward,
+        "first_target": first_target,
+        "second_target": second_target,
+        "stop_loss": stop_loss,
+        "support": support_level,
+        "resistance": resistance_level,
+    }
+    radar_scores_v12 = nova_analytics.score_breakdown(latest, general_score, confidence)
     nova_decision.render_premium_decision_center(
         decision_payload,
         radar_scores_v12,
@@ -1982,14 +1833,14 @@ def render_dashboard_page() -> None:
     st.markdown("### Gauge + Teknik Barlar")
     gauge_col, bars_col = st.columns([0.95, 1.45])
     with gauge_col:
-        st.plotly_chart(session_score_gauge(general_score, theme_mode), width="stretch")
+        st.plotly_chart(create_score_gauge(general_score), width="stretch")
     with bars_col:
         nova_decision.render_progress_bars(radar_scores_v12)
 
     st.markdown("### Radar + AI Analiz Özeti")
     radar_col, summary_col = st.columns([1.05, 1.15])
     with radar_col:
-        st.plotly_chart(session_radar_chart(radar_scores_v12, theme_mode), width="stretch")
+        st.plotly_chart(nova_decision.radar_chart(radar_scores_v12), width="stretch")
     with summary_col:
         render_today_decision_box(
             signal_text,
@@ -1999,11 +1850,11 @@ def render_dashboard_page() -> None:
             support_level,
             resistance_level,
         )
-        st.info(str(analysis["analysis_text"]))
+        st.info(build_analysis(latest, general_score, score_reasons, signal_text))
 
     st.markdown("### Fiyat Grafiği")
     st.plotly_chart(
-        session_price_chart(
+        create_price_chart(
             data,
             ticker,
             period_label,
@@ -2012,7 +1863,6 @@ def render_dashboard_page() -> None:
             stop_loss,
             first_target,
             second_target,
-            theme_mode,
         ),
         width="stretch",
     )
