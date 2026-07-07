@@ -1,3 +1,5 @@
+import time
+
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -42,32 +44,57 @@ def _scan_row(symbol: str, name: str, raw_data: pd.DataFrame) -> dict[str, objec
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def scan_smart_market(symbol_rows: tuple[tuple[str, str], ...]) -> tuple[pd.DataFrame, list[str]]:
+def download_price_data(symbol: str) -> pd.DataFrame:
+    return yf.download(
+        symbol,
+        period="6mo",
+        interval="1d",
+        progress=False,
+        auto_adjust=True,
+        multi_level_index=False,
+        timeout=8,
+    )
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def scan_smart_symbol(symbol: str, name: str) -> dict[str, object] | None:
+    raw_data = download_price_data(symbol)
+    return _scan_row(symbol, name, raw_data)
+
+
+def scan_smart_market(
+    symbol_rows: tuple[tuple[str, str], ...],
+    max_seconds: int = 60,
+    progress_callback=None,
+) -> tuple[pd.DataFrame, list[str], bool, int]:
     rows = []
     failed = []
+    started_at = time.monotonic()
+    total = len(symbol_rows)
+    scanned = 0
+    timed_out = False
+
     for symbol, name in symbol_rows:
+        if time.monotonic() - started_at >= max_seconds:
+            timed_out = True
+            break
         try:
-            raw_data = yf.download(
-                symbol,
-                period="6mo",
-                interval="1d",
-                progress=False,
-                auto_adjust=True,
-                multi_level_index=False,
-                timeout=15,
-            )
-            row = _scan_row(symbol, name, raw_data)
+            row = scan_smart_symbol(symbol, name)
         except Exception:
             row = None
+        scanned += 1
         if row is None:
             failed.append(symbol)
         else:
             rows.append(row)
+        if progress_callback is not None:
+            progress_callback(scanned, total)
+
     table = pd.DataFrame(rows)
     if not table.empty:
         table = table.sort_values(["Nova Score", "AI Güven Endeksi"], ascending=False).reset_index(drop=True)
         table.insert(0, "Sıra", range(1, len(table) + 1))
-    return table, failed
+    return table, failed, timed_out, scanned
 
 
 def apply_filters(

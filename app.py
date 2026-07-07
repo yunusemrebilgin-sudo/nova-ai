@@ -2,6 +2,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+import time
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -16,6 +17,11 @@ DECISION_SUPPORT_DISCLAIMER = "Bu platform yalnızca karar destek amaçlıdır. 
 DISCLAIMER = DECISION_SUPPORT_DISCLAIMER
 SIGNAL_DISCLAIMER = DECISION_SUPPORT_DISCLAIMER
 BIST_SYMBOLS_PATH = Path("data/bist_symbols.csv")
+SMART_SCAN_MODES = {
+    "Hızlı Tarama: İlk 50 hisse": 50,
+    "Geniş Tarama: İlk 150 hisse": 150,
+    "Tam Tarama: Tüm BIST": None,
+}
 
 GLOBAL_TICKERS = [
     "AAPL",
@@ -1213,6 +1219,175 @@ def load_market_data(ticker: str, period_label: str) -> pd.DataFrame:
     return data
 
 
+def dashboard_cache_key(ticker: str, period_label: str) -> tuple[str, str]:
+    return ticker.strip().upper(), period_label
+
+
+def get_dashboard_analysis(ticker: str, period_label: str) -> dict[str, object]:
+    cache = st.session_state.setdefault("dashboard_analysis_cache", {})
+    key = dashboard_cache_key(ticker, period_label)
+    if key in cache:
+        st.session_state.dashboard_last_cache_hit = True
+        return cache[key]
+
+    timings: dict[str, float] = {}
+
+    started = time.perf_counter()
+    data = load_market_data(ticker, period_label)
+    timings["veri_indirme_indikator"] = time.perf_counter() - started
+
+    started = time.perf_counter()
+    latest = data.iloc[-1]
+    general_score, score_reasons = calculate_general_score(latest)
+    signal_text, signal_detail, signal_class = decision_signal(general_score)
+    support_level, resistance_level = support_resistance(data)
+    confidence = nova_confidence_index(latest)
+    trade_table = build_trade_horizon_table(latest, general_score, confidence, support_level, resistance_level)
+    radar_scores = nova_analytics.score_breakdown(latest, general_score, confidence)
+    analysis_text = build_analysis(latest, general_score, score_reasons, signal_text)
+    timings["skor_karar_hesaplari"] = time.perf_counter() - started
+
+    analysis = {
+        "ticker": ticker,
+        "period_label": period_label,
+        "data": data,
+        "latest": latest,
+        "general_score": general_score,
+        "score_reasons": score_reasons,
+        "signal_text": signal_text,
+        "signal_detail": signal_detail,
+        "signal_class": signal_class,
+        "support_level": support_level,
+        "resistance_level": resistance_level,
+        "confidence": confidence,
+        "trade_table": trade_table,
+        "radar_scores": radar_scores,
+        "analysis_text": analysis_text,
+        "timings": timings,
+    }
+    cache[key] = analysis
+    st.session_state.dashboard_last_cache_hit = False
+    return analysis
+
+
+def get_dashboard_horizon_state(analysis: dict[str, object], selected_horizon: str) -> dict[str, object]:
+    cache = st.session_state.setdefault("dashboard_horizon_cache", {})
+    data = analysis["data"]
+    latest = analysis["latest"]
+    key = (
+        str(analysis["ticker"]).strip().upper(),
+        str(analysis["period_label"]),
+        selected_horizon,
+        str(data.index[-1]),
+    )
+    if key in cache:
+        return cache[key]
+
+    trade_table = analysis["trade_table"]
+    selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
+    selected_signal = str(selected_trade_row["Sinyal"])
+    selected_score = int(selected_trade_row["Nova Skoru"])
+    selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
+    selected_sell_probability = int(selected_trade_row["Sat Sinyali Yakma Riski %"])
+    first_target, second_target, stop_loss, risk_reward = target_stop_levels(
+        latest,
+        float(analysis["support_level"]),
+        float(analysis["resistance_level"]),
+        selected_expected_return,
+    )
+    main_decision = main_decision_label(selected_signal, int(analysis["confidence"]), selected_sell_probability)
+    decision_class = "nova-signal-buy"
+    if main_decision in {"BEKLE", "TAKİP ET"}:
+        decision_class = "nova-signal-watch"
+    elif main_decision == "SAT":
+        decision_class = "nova-signal-sell"
+
+    decision_payload = {
+        "signal_class": decision_class,
+        "main_decision": main_decision,
+        "confidence": int(analysis["confidence"]),
+        "quality": trade_quality(int(analysis["confidence"]), selected_sell_probability),
+        "horizon": selected_horizon,
+        "holding_period": selected_trade_row["Beklenen Taşıma Süresi"],
+        "expected_return": selected_expected_return,
+        "sell_probability": selected_sell_probability,
+        "risk_reward": risk_reward,
+        "first_target": first_target,
+        "second_target": second_target,
+        "stop_loss": stop_loss,
+        "support": float(analysis["support_level"]),
+        "resistance": float(analysis["resistance_level"]),
+    }
+    horizon_state = {
+        "selected_trade_row": selected_trade_row,
+        "selected_score": selected_score,
+        "selected_expected_return": selected_expected_return,
+        "selected_sell_probability": selected_sell_probability,
+        "first_target": first_target,
+        "second_target": second_target,
+        "stop_loss": stop_loss,
+        "risk_reward": risk_reward,
+        "decision_payload": decision_payload,
+    }
+    cache[key] = horizon_state
+    return horizon_state
+
+
+def session_score_gauge(score: int, theme_mode: str) -> go.Figure:
+    cache = st.session_state.setdefault("dashboard_figure_cache", {})
+    key = ("score_gauge", score, theme_mode)
+    if key not in cache:
+        cache[key] = create_score_gauge(score)
+    return cache[key]
+
+
+def session_radar_chart(scores: dict[str, int], theme_mode: str) -> go.Figure:
+    cache = st.session_state.setdefault("dashboard_figure_cache", {})
+    key = ("radar_chart", tuple(scores.items()), theme_mode)
+    if key not in cache:
+        cache[key] = nova_decision.radar_chart(scores)
+    return cache[key]
+
+
+def session_price_chart(
+    data: pd.DataFrame,
+    ticker: str,
+    period_label: str,
+    support_level: float,
+    resistance_level: float,
+    stop_loss: float | None,
+    first_target: float | None,
+    second_target: float | None,
+    theme_mode: str,
+) -> go.Figure:
+    cache = st.session_state.setdefault("dashboard_figure_cache", {})
+    key = (
+        "price_chart",
+        ticker.strip().upper(),
+        period_label,
+        str(data.index[-1]),
+        len(data),
+        round(float(support_level), 4),
+        round(float(resistance_level), 4),
+        round(float(stop_loss), 4) if stop_loss is not None else None,
+        round(float(first_target), 4) if first_target is not None else None,
+        round(float(second_target), 4) if second_target is not None else None,
+        theme_mode,
+    )
+    if key not in cache:
+        cache[key] = create_price_chart(
+            data,
+            ticker,
+            period_label,
+            support_level,
+            resistance_level,
+            stop_loss,
+            first_target,
+            second_target,
+        )
+    return cache[key]
+
+
 def prepare_scanner_row(ticker: str, raw_data: pd.DataFrame) -> dict[str, object] | None:
     required_columns = {"Open", "High", "Low", "Close", "Volume"}
     if raw_data.empty or not required_columns.issubset(raw_data.columns):
@@ -1464,10 +1639,9 @@ def render_scanner_disclosure() -> None:
         )
 
 
-def render_smart_summary_cards(scanner_table: pd.DataFrame, scanned_count: int) -> None:
+def render_smart_summary_cards(scanner_table: pd.DataFrame, scanned_count: int, scan_time: str) -> None:
     highest_score = int(scanner_table["Nova Score"].max()) if not scanner_table.empty else 0
     average_score = round(float(scanner_table["Nova Score"].mean()), 1) if not scanner_table.empty else 0
-    scan_time = datetime.now().strftime("%H:%M")
 
     col_1, col_2, col_3, col_4 = st.columns(4)
     with col_1:
@@ -1481,107 +1655,19 @@ def render_smart_summary_cards(scanner_table: pd.DataFrame, scanned_count: int) 
 
 
 def render_top_50_scroller(table: pd.DataFrame) -> None:
-    cards = []
-    for idx, row in table.head(50).iterrows():
-        rank = int(row.get("Sıra", idx + 1))
-        cards.append(
-            f"""
-            <div class="nova-rank-card">
-                <div class="nova-rank-top">
-                    <span class="nova-rank-number">#{rank}</span>
-                    {render_badge(row["Sonuç"])}
-                </div>
-                <div class="nova-rank-symbol">{escape(str(row["Hisse"]))}</div>
-                <div class="nova-rank-name">{escape(str(row["Şirket"]))}</div>
-                <div class="nova-rank-score">{int(row["Nova Score"])}/100</div>
-                <div class="nova-rank-meta">
-                    <span>AI Güven: %{escape(str(row["AI Güven Endeksi"]))}</span>
-                    <span>Risk: {render_badge(row["Sat Riski %"])}</span>
-                </div>
-            </div>
-            """
-        )
-
-    st.markdown(
-        f"""
-        <style>
-            .nova-rank-scroll {{
-                display: flex;
-                gap: 12px;
-                width: 100%;
-                overflow-x: auto;
-                padding: 2px 2px 12px;
-                scroll-snap-type: x proximity;
-            }}
-            .nova-rank-scroll::-webkit-scrollbar {{
-                height: 8px;
-            }}
-            .nova-rank-scroll::-webkit-scrollbar-thumb {{
-                background: rgba(56, 189, 248, 0.35);
-                border-radius: 999px;
-            }}
-            .nova-rank-card {{
-                flex: 0 0 245px;
-                scroll-snap-align: start;
-                min-height: 210px;
-                border: 1px solid var(--nova-border);
-                border-radius: var(--nova-radius);
-                padding: 15px;
-                background: var(--nova-card-bg);
-                box-shadow: var(--nova-shadow);
-                display: flex;
-                flex-direction: column;
-                justify-content: space-between;
-                overflow-wrap: anywhere;
-            }}
-            .nova-rank-top {{
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 8px;
-            }}
-            .nova-rank-number {{
-                color: var(--nova-cyan);
-                font-size: 0.82rem;
-                font-weight: 820;
-            }}
-            .nova-rank-symbol {{
-                color: var(--nova-text);
-                font-size: 1.35rem;
-                font-weight: 860;
-                line-height: 1.1;
-                margin-top: 10px;
-            }}
-            .nova-rank-name {{
-                color: var(--nova-muted);
-                font-size: 0.84rem;
-                line-height: 1.35;
-                min-height: 38px;
-            }}
-            .nova-rank-score {{
-                color: var(--nova-text);
-                font-size: 1.65rem;
-                font-weight: 880;
-                line-height: 1;
-                margin-top: 8px;
-            }}
-            .nova-rank-meta {{
-                display: grid;
-                gap: 8px;
-                color: var(--nova-muted);
-                font-size: 0.82rem;
-                line-height: 1.25;
-            }}
-            @media (max-width: 700px) {{
-                .nova-rank-card {{
-                    flex-basis: 220px;
-                }}
-            }}
-        </style>
-        <div class="nova-rank-scroll">{''.join(cards)}</div>
-        """,
-        unsafe_allow_html=True,
-    )
+    top_rows = list(table.head(50).iterrows())
+    for offset in range(0, len(top_rows), 5):
+        columns = st.columns(5)
+        for column, (idx, row) in zip(columns, top_rows[offset : offset + 5]):
+            rank = int(row.get("Sıra", idx + 1))
+            with column:
+                with st.container(border=True):
+                    st.caption(f"#{rank} | {row['Sonuç']}")
+                    st.markdown(f"**{row['Hisse']}**")
+                    st.caption(str(row["Şirket"]))
+                    st.metric("Nova Skoru", f"{int(row['Nova Score'])}/100")
+                    st.caption(f"AI Güven: %{row['AI Güven Endeksi']}")
+                    st.caption(f"Risk: %{row['Sat Riski %']}")
 
 
 def render_market_scanner_page() -> None:
@@ -1673,14 +1759,52 @@ def render_smart_scanner_page() -> None:
     symbol_rows_df = bist_symbols[["symbol", "name"]]
     symbol_rows = tuple(symbol_rows_df.itertuples(index=False, name=None))
 
-    with st.spinner("Smart Scanner CSV listesindeki tüm BIST hisselerini tarıyor..."):
-        scanner_table, failed_tickers = nova_scanner.scan_smart_market(symbol_rows)
+    scan_mode = st.radio(
+        "Tarama modu",
+        list(SMART_SCAN_MODES.keys()),
+        horizontal=True,
+        key="smart_scan_mode",
+    )
+    scan_limit = SMART_SCAN_MODES[scan_mode]
+    target_symbol_rows = symbol_rows[:scan_limit] if scan_limit is not None else symbol_rows
+    target_count = len(target_symbol_rows)
 
-    if scanner_table.empty:
-        st.error("Smart Scanner için veri alınamadı. Lütfen seçimleri veya bağlantıyı kontrol edin.")
+    scan_requested = st.button("Piyasayı Yeniden Tara", type="primary", width="stretch")
+    if scan_requested:
+        progress_slot = st.empty()
+        progress_bar = progress_slot.progress(0, text=f"0 / {target_count} hisse tarandı")
+
+        def update_scan_progress(scanned: int, total: int) -> None:
+            progress_bar.progress(scanned / total if total else 0, text=f"{scanned} / {total} hisse tarandı")
+
+        with st.spinner("Smart Scanner CSV listesindeki tüm BIST hisselerini tarıyor..."):
+            scanner_table, failed_tickers, timed_out, scanned_count = nova_scanner.scan_smart_market(
+                target_symbol_rows,
+                max_seconds=60,
+                progress_callback=update_scan_progress,
+            )
+        progress_bar.progress(scanned_count / target_count if target_count else 0, text=f"{scanned_count} / {target_count} hisse tarandı")
+        if timed_out:
+            st.warning("Tarama süresi uzadı. İlk sonuçlar gösteriliyor.")
+        if scanner_table.empty:
+            st.error("Smart Scanner için veri alınamadı. Önceki sonuç varsa korunur.")
+        else:
+            st.session_state.smart_scanner_results = scanner_table
+            st.session_state.smart_scanner_failed_tickers = failed_tickers
+            st.session_state.smart_scanner_scanned_count = scanned_count
+            st.session_state.smart_scanner_scan_time = datetime.now().strftime("%H:%M")
+
+    scanner_table = st.session_state.get("smart_scanner_results")
+    failed_tickers = st.session_state.get("smart_scanner_failed_tickers", [])
+    scanned_count = st.session_state.get("smart_scanner_scanned_count", len(symbol_rows))
+    scan_time = st.session_state.get("smart_scanner_scan_time", "-")
+
+    if scanner_table is None or scanner_table.empty:
+        st.info("Henüz tarama yapılmadı. Piyasayı taramak için butona basın.")
+        render_scanner_disclosure()
         return
 
-    render_smart_summary_cards(scanner_table, len(symbol_rows))
+    render_smart_summary_cards(scanner_table, scanned_count, scan_time)
 
     trend_filter = st.session_state.get("smart_filter_trend", "Tümü")
     momentum_filter = st.session_state.get("smart_filter_momentum", "Tümü")
@@ -1761,7 +1885,7 @@ def render_smart_scanner_page() -> None:
             st.slider("Maks Volatilite", 0.0, 15.0, 15.0, 0.5, key="smart_filter_volatility")
 
     if failed_tickers:
-        st.warning("Veri alınamayan ve atlanan hisseler: " + ", ".join(failed_tickers))
+        st.caption("Veri alınamayan ve atlanan hisseler: " + ", ".join(failed_tickers))
 
     render_scanner_disclosure()
 
@@ -1807,13 +1931,17 @@ def render_dashboard_page() -> None:
         st.info("Analiz için bir hisse kodu girin.")
         stop_app()
 
-    data = load_market_data(ticker, period_label)
-    latest = data.iloc[-1]
-    general_score, score_reasons = calculate_general_score(latest)
-    signal_text, signal_detail, signal_class = decision_signal(general_score)
-    support_level, resistance_level = support_resistance(data)
-    confidence = nova_confidence_index(latest)
-    trade_table = build_trade_horizon_table(latest, general_score, confidence, support_level, resistance_level)
+    analysis = get_dashboard_analysis(ticker, period_label)
+    data = analysis["data"]
+    latest = analysis["latest"]
+    general_score = int(analysis["general_score"])
+    signal_text = str(analysis["signal_text"])
+    signal_detail = str(analysis["signal_detail"])
+    signal_class = str(analysis["signal_class"])
+    support_level = float(analysis["support_level"])
+    resistance_level = float(analysis["resistance_level"])
+    confidence = int(analysis["confidence"])
+    trade_table = analysis["trade_table"]
 
     st.markdown("### İşlem Vadeleri")
     render_trade_horizon_cards(trade_table)
@@ -1824,41 +1952,16 @@ def render_dashboard_page() -> None:
         horizontal=True,
     )
 
-    selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
-    selected_signal = str(selected_trade_row["Sinyal"])
-    selected_score = int(selected_trade_row["Nova Skoru"])
-    selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
-    selected_sell_probability = int(selected_trade_row["Sat Sinyali Yakma Riski %"])
-    first_target, second_target, stop_loss, risk_reward = target_stop_levels(
-        latest,
-        support_level,
-        resistance_level,
-        selected_expected_return,
-    )
-    main_decision = main_decision_label(selected_signal, confidence, selected_sell_probability)
-    decision_class = "nova-signal-buy"
-    if main_decision in {"BEKLE", "TAKİP ET"}:
-        decision_class = "nova-signal-watch"
-    elif main_decision == "SAT":
-        decision_class = "nova-signal-sell"
-
-    decision_payload = {
-        "signal_class": decision_class,
-        "main_decision": main_decision,
-        "confidence": confidence,
-        "quality": trade_quality(confidence, selected_sell_probability),
-        "horizon": selected_horizon,
-        "holding_period": selected_trade_row["Beklenen Taşıma Süresi"],
-        "expected_return": selected_expected_return,
-        "sell_probability": selected_sell_probability,
-        "risk_reward": risk_reward,
-        "first_target": first_target,
-        "second_target": second_target,
-        "stop_loss": stop_loss,
-        "support": support_level,
-        "resistance": resistance_level,
-    }
-    radar_scores_v12 = nova_analytics.score_breakdown(latest, general_score, confidence)
+    horizon_state = get_dashboard_horizon_state(analysis, selected_horizon)
+    selected_trade_row = horizon_state["selected_trade_row"]
+    selected_score = int(horizon_state["selected_score"])
+    selected_expected_return = float(horizon_state["selected_expected_return"])
+    first_target = float(horizon_state["first_target"])
+    second_target = float(horizon_state["second_target"])
+    stop_loss = float(horizon_state["stop_loss"])
+    decision_payload = horizon_state["decision_payload"]
+    radar_scores_v12 = analysis["radar_scores"]
+    theme_mode = st.session_state.get("theme_mode", "dark")
     nova_decision.render_premium_decision_center(
         decision_payload,
         radar_scores_v12,
@@ -1879,14 +1982,14 @@ def render_dashboard_page() -> None:
     st.markdown("### Gauge + Teknik Barlar")
     gauge_col, bars_col = st.columns([0.95, 1.45])
     with gauge_col:
-        st.plotly_chart(create_score_gauge(general_score), width="stretch")
+        st.plotly_chart(session_score_gauge(general_score, theme_mode), width="stretch")
     with bars_col:
         nova_decision.render_progress_bars(radar_scores_v12)
 
     st.markdown("### Radar + AI Analiz Özeti")
     radar_col, summary_col = st.columns([1.05, 1.15])
     with radar_col:
-        st.plotly_chart(nova_decision.radar_chart(radar_scores_v12), width="stretch")
+        st.plotly_chart(session_radar_chart(radar_scores_v12, theme_mode), width="stretch")
     with summary_col:
         render_today_decision_box(
             signal_text,
@@ -1896,11 +1999,11 @@ def render_dashboard_page() -> None:
             support_level,
             resistance_level,
         )
-        st.info(build_analysis(latest, general_score, score_reasons, signal_text))
+        st.info(str(analysis["analysis_text"]))
 
     st.markdown("### Fiyat Grafiği")
     st.plotly_chart(
-        create_price_chart(
+        session_price_chart(
             data,
             ticker,
             period_label,
@@ -1909,6 +2012,7 @@ def render_dashboard_page() -> None:
             stop_loss,
             first_target,
             second_target,
+            theme_mode,
         ),
         width="stretch",
     )
