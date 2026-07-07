@@ -2,6 +2,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from datetime import datetime
 from html import escape
 from pathlib import Path
 from plotly.subplots import make_subplots
@@ -1463,6 +1464,126 @@ def render_scanner_disclosure() -> None:
         )
 
 
+def render_smart_summary_cards(scanner_table: pd.DataFrame, scanned_count: int) -> None:
+    highest_score = int(scanner_table["Nova Score"].max()) if not scanner_table.empty else 0
+    average_score = round(float(scanner_table["Nova Score"].mean()), 1) if not scanner_table.empty else 0
+    scan_time = datetime.now().strftime("%H:%M")
+
+    col_1, col_2, col_3, col_4 = st.columns(4)
+    with col_1:
+        render_value_card("Taranan Hisse Sayısı", str(scanned_count))
+    with col_2:
+        render_value_card("Son Tarama Zamanı", scan_time)
+    with col_3:
+        render_value_card("En Yüksek Nova Skoru", f"{highest_score}/100")
+    with col_4:
+        render_value_card("Ortalama Nova Skoru", f"{average_score}/100")
+
+
+def render_top_50_scroller(table: pd.DataFrame) -> None:
+    cards = []
+    for idx, row in table.head(50).iterrows():
+        rank = int(row.get("Sıra", idx + 1))
+        cards.append(
+            f"""
+            <div class="nova-rank-card">
+                <div class="nova-rank-top">
+                    <span class="nova-rank-number">#{rank}</span>
+                    {render_badge(row["Sonuç"])}
+                </div>
+                <div class="nova-rank-symbol">{escape(str(row["Hisse"]))}</div>
+                <div class="nova-rank-name">{escape(str(row["Şirket"]))}</div>
+                <div class="nova-rank-score">{int(row["Nova Score"])}/100</div>
+                <div class="nova-rank-meta">
+                    <span>AI Güven: %{escape(str(row["AI Güven Endeksi"]))}</span>
+                    <span>Risk: {render_badge(row["Sat Riski %"])}</span>
+                </div>
+            </div>
+            """
+        )
+
+    st.markdown(
+        f"""
+        <style>
+            .nova-rank-scroll {{
+                display: flex;
+                gap: 12px;
+                width: 100%;
+                overflow-x: auto;
+                padding: 2px 2px 12px;
+                scroll-snap-type: x proximity;
+            }}
+            .nova-rank-scroll::-webkit-scrollbar {{
+                height: 8px;
+            }}
+            .nova-rank-scroll::-webkit-scrollbar-thumb {{
+                background: rgba(56, 189, 248, 0.35);
+                border-radius: 999px;
+            }}
+            .nova-rank-card {{
+                flex: 0 0 245px;
+                scroll-snap-align: start;
+                min-height: 210px;
+                border: 1px solid var(--nova-border);
+                border-radius: var(--nova-radius);
+                padding: 15px;
+                background: var(--nova-card-bg);
+                box-shadow: var(--nova-shadow);
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+                overflow-wrap: anywhere;
+            }}
+            .nova-rank-top {{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+            }}
+            .nova-rank-number {{
+                color: var(--nova-cyan);
+                font-size: 0.82rem;
+                font-weight: 820;
+            }}
+            .nova-rank-symbol {{
+                color: var(--nova-text);
+                font-size: 1.35rem;
+                font-weight: 860;
+                line-height: 1.1;
+                margin-top: 10px;
+            }}
+            .nova-rank-name {{
+                color: var(--nova-muted);
+                font-size: 0.84rem;
+                line-height: 1.35;
+                min-height: 38px;
+            }}
+            .nova-rank-score {{
+                color: var(--nova-text);
+                font-size: 1.65rem;
+                font-weight: 880;
+                line-height: 1;
+                margin-top: 8px;
+            }}
+            .nova-rank-meta {{
+                display: grid;
+                gap: 8px;
+                color: var(--nova-muted);
+                font-size: 0.82rem;
+                line-height: 1.25;
+            }}
+            @media (max-width: 700px) {{
+                .nova-rank-card {{
+                    flex-basis: 220px;
+                }}
+            }}
+        </style>
+        <div class="nova-rank-scroll">{''.join(cards)}</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_market_scanner_page() -> None:
     st.title("Piyasa Tarayıcı")
     st.markdown(
@@ -1549,62 +1670,25 @@ def render_smart_scanner_page() -> None:
     )
     bist_symbols = get_bist_symbols_or_stop()
 
-    st.markdown("### Taranacak Hisseler")
-    search_query = st.text_input("Hisse ara", placeholder="Örn: Türk Hava, ASELS", key="smart_scanner_search")
-    filtered_symbols = filter_symbols(bist_symbols, search_query)
-    if filtered_symbols.empty:
-        st.warning("Aramanızla eşleşen BIST hissesi bulunamadı.")
-        filtered_symbols = bist_symbols
-
-    options = filtered_symbols["symbol"].tolist()
-    default_symbols = bist_symbols["symbol"].head(50).tolist()
-    default_selection = [symbol for symbol in default_symbols if symbol in options] or options[:50]
-    symbol_labels = build_symbol_labels(bist_symbols)
-    if "smart_scanner_symbols" in st.session_state:
-        st.session_state.smart_scanner_symbols = [
-            symbol for symbol in st.session_state.smart_scanner_symbols if symbol in options
-        ]
-    selected_symbols = st.multiselect(
-        "Taranacak hisseler",
-        options,
-        default=default_selection,
-        format_func=lambda symbol: symbol_labels.get(symbol, symbol),
-        key="smart_scanner_symbols",
-    )
-
-    action_col, filter_hint_col = st.columns([0.9, 3.1])
-    with action_col:
-        scan_requested = st.button("Seçili Hisseleri Tara", type="primary", width="stretch")
-    with filter_hint_col:
-        st.caption("Filtreler sayfanın altında sonuçlarla birlikte çalışır.")
-    if scan_requested:
-        st.session_state.smart_scanner_selected = selected_symbols
-
-    if "smart_scanner_selected" not in st.session_state:
-        st.session_state.smart_scanner_selected = default_symbols
-
-    symbols_to_scan = st.session_state.smart_scanner_selected
-    if not symbols_to_scan:
-        st.info("Tarama için en az bir hisse seçin.")
-        return
-
-    symbol_rows_df = bist_symbols[bist_symbols["symbol"].isin(symbols_to_scan)][["symbol", "name"]]
+    symbol_rows_df = bist_symbols[["symbol", "name"]]
     symbol_rows = tuple(symbol_rows_df.itertuples(index=False, name=None))
 
-    with st.spinner("Smart Scanner BIST hisselerini tarıyor..."):
+    with st.spinner("Smart Scanner CSV listesindeki tüm BIST hisselerini tarıyor..."):
         scanner_table, failed_tickers = nova_scanner.scan_smart_market(symbol_rows)
 
     if scanner_table.empty:
         st.error("Smart Scanner için veri alınamadı. Lütfen seçimleri veya bağlantıyı kontrol edin.")
         return
 
+    render_smart_summary_cards(scanner_table, len(symbol_rows))
+
     trend_filter = st.session_state.get("smart_filter_trend", "Tümü")
     momentum_filter = st.session_state.get("smart_filter_momentum", "Tümü")
-    min_score = st.session_state.get("smart_filter_min_score", 50)
-    min_confidence = st.session_state.get("smart_filter_min_confidence", 45)
+    min_score = st.session_state.get("smart_filter_min_score", 0)
+    min_confidence = st.session_state.get("smart_filter_min_confidence", 0)
     ema_filter = st.session_state.get("smart_filter_ema", False)
     macd_filter = st.session_state.get("smart_filter_macd", "Tümü")
-    rsi_range = st.session_state.get("smart_filter_rsi", (30, 70))
+    rsi_range = st.session_state.get("smart_filter_rsi", (0, 100))
     min_volume_ratio = st.session_state.get("smart_filter_volume", 0.0)
     max_volatility = st.session_state.get("smart_filter_volatility", 15.0)
     filtered_table = nova_scanner.apply_filters(
@@ -1620,22 +1704,8 @@ def render_smart_scanner_page() -> None:
         max_volatility,
     )
 
-    visible_columns = [
-        "Sıra",
-        "Hisse",
-        "Şirket",
-        "Nova Score",
-        "AI Güven Endeksi",
-        "Beklenen Getiri %",
-        "Beklenen Taşıma Süresi",
-        "Alım Uygunluğu %",
-        "Sat Riski %",
-        "Trend",
-        "Sonuç",
-    ]
-
-    st.markdown("### 🔥 Bugünün En Güçlü 5 Hissesi")
-    top_rows = filtered_table.head(5)
+    st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
+    top_rows = filtered_table.head(10)
     if top_rows.empty:
         st.info("Filtrelere uyan hisse bulunamadı.")
     else:
@@ -1649,6 +1719,12 @@ def render_smart_scanner_page() -> None:
             "Beklenen Taşıma Süresi",
             "Trend",
         ])
+
+    st.markdown("### 🏆 En Güçlü İlk 50 Hisse")
+    if filtered_table.empty:
+        st.info("Filtrelere uyan hisse bulunamadı.")
+    else:
+        render_top_50_scroller(filtered_table)
 
     st.markdown("### Nova BIST Tarama Tablosu")
     smart_table = filtered_table.rename(columns={"Nova Score": "Nova Skoru", "Sonuç": "Sinyal", "Sat Riski %": "Risk"})
@@ -1668,21 +1744,21 @@ def render_smart_scanner_page() -> None:
     else:
         render_nova_bist_table(smart_table, smart_visible_columns)
 
-    st.markdown("### Filtreler")
-    filter_col_1, filter_col_2, filter_col_3, filter_col_4 = st.columns(4)
-    with filter_col_1:
-        st.selectbox("Trend", ["Tümü", "Pozitif", "Nötr", "Negatif"], key="smart_filter_trend")
-        st.slider("Min Nova Score", 0, 100, 50, key="smart_filter_min_score")
-    with filter_col_2:
-        st.selectbox("Momentum", ["Tümü", "Pozitif", "Negatif"], key="smart_filter_momentum")
-        st.slider("Min AI Güven", 0, 100, 45, key="smart_filter_min_confidence")
-    with filter_col_3:
-        st.checkbox("EMA20 > EMA50", value=False, key="smart_filter_ema")
-        st.selectbox("MACD", ["Tümü", "Pozitif", "Negatif"], key="smart_filter_macd")
-    with filter_col_4:
-        st.slider("RSI Aralığı", 0, 100, (30, 70), key="smart_filter_rsi")
-        st.slider("Min Hacim Oranı", 0.0, 3.0, 0.0, 0.1, key="smart_filter_volume")
-        st.slider("Maks Volatilite", 0.0, 15.0, 15.0, 0.5, key="smart_filter_volatility")
+    with st.expander("🎛 Gelişmiş Filtreler", expanded=False):
+        filter_col_1, filter_col_2, filter_col_3, filter_col_4 = st.columns(4)
+        with filter_col_1:
+            st.selectbox("Trend", ["Tümü", "Pozitif", "Nötr", "Negatif"], key="smart_filter_trend")
+            st.slider("Min Nova Score", 0, 100, 0, key="smart_filter_min_score")
+        with filter_col_2:
+            st.selectbox("Momentum", ["Tümü", "Pozitif", "Negatif"], key="smart_filter_momentum")
+            st.slider("Min AI Güven", 0, 100, 0, key="smart_filter_min_confidence")
+        with filter_col_3:
+            st.checkbox("EMA20 > EMA50", value=False, key="smart_filter_ema")
+            st.selectbox("MACD", ["Tümü", "Pozitif", "Negatif"], key="smart_filter_macd")
+        with filter_col_4:
+            st.slider("RSI Aralığı", 0, 100, (0, 100), key="smart_filter_rsi")
+            st.slider("Min Hacim Oranı", 0.0, 3.0, 0.0, 0.1, key="smart_filter_volume")
+            st.slider("Maks Volatilite", 0.0, 15.0, 15.0, 0.5, key="smart_filter_volatility")
 
     if failed_tickers:
         st.warning("Veri alınamayan ve atlanan hisseler: " + ", ".join(failed_tickers))
