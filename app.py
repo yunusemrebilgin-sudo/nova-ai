@@ -1804,7 +1804,8 @@ def render_smart_scanner_page() -> None:
 
         def update_scan_progress(scanned: int, total: int) -> None:
             progress_text.caption(f"{scanned} / {total} hisse tarandı")
-            progress_bar.progress(scanned / total if total else 0)
+            progress_percent = int(round((scanned / total) * 100)) if total else 0
+            progress_bar.progress(min(100, max(0, progress_percent)))
 
         with st.spinner("Smart Scanner CSV listesindeki tüm BIST hisselerini tarıyor..."):
             scanner_table, failed_tickers, timed_out, scanned_count = nova_scanner.scan_smart_market(
@@ -1814,7 +1815,8 @@ def render_smart_scanner_page() -> None:
                 progress_callback=update_scan_progress,
             )
         progress_text.caption(f"{scanned_count} / {target_count} hisse tarandı")
-        progress_bar.progress(scanned_count / target_count if target_count else 0)
+        final_progress_percent = int(round((scanned_count / target_count) * 100)) if target_count else 0
+        progress_bar.progress(min(100, max(0, final_progress_percent)))
         if timed_out:
             st.warning("Tarama süresi uzadı. İlk sonuçlar gösteriliyor.")
         if scanner_table.empty:
