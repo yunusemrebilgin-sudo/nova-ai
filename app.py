@@ -223,7 +223,7 @@ def render_sidebar() -> str:
         st.markdown('<div class="nova-sidebar-line"></div>', unsafe_allow_html=True)
         if is_authenticated():
             st.caption(f"Oturum: {st.session_state.auth_user}")
-            if st.button("Çıkış Yap", width="stretch"):
+            if st.button("Çıkış Yap"):
                 logout_current_user()
                 st.rerun()
         else:
@@ -1707,7 +1707,7 @@ def render_market_scanner_page() -> None:
         )
     with action_col:
         st.markdown('<div class="nova-button-spacer"></div>', unsafe_allow_html=True)
-        scan_requested = st.button("Seçili Hisseleri Tara", type="primary", width="stretch")
+        scan_requested = st.button("Seçili Hisseleri Tara", type="primary")
     if scan_requested:
         st.session_state.scanner_selected_symbols = selected_symbols
 
@@ -1795,7 +1795,7 @@ def render_smart_scanner_page() -> None:
         key="smart_scan_horizon",
     )
 
-    scan_requested = st.button("Piyasayı Yeniden Tara", type="primary", width="stretch")
+    scan_requested = st.button("Piyasayı Yeniden Tara", type="primary")
     if scan_requested:
         progress_text = st.empty()
         progress_slot = st.empty()
@@ -2036,14 +2036,14 @@ def render_dashboard_page() -> None:
     st.markdown("### Gauge + Teknik Barlar")
     gauge_col, bars_col = st.columns([0.95, 1.45])
     with gauge_col:
-        st.plotly_chart(create_score_gauge(general_score, dashboard_theme_mode), width="stretch")
+        st.plotly_chart(create_score_gauge(general_score, dashboard_theme_mode), use_container_width=True)
     with bars_col:
         nova_decision.render_progress_bars(radar_scores_v12)
 
     st.markdown("### Radar + AI Analiz Özeti")
     radar_col, summary_col = st.columns([1.05, 1.15])
     with radar_col:
-        st.plotly_chart(nova_decision.radar_chart(radar_scores_v12, dashboard_theme_mode), width="stretch")
+        st.plotly_chart(nova_decision.radar_chart(radar_scores_v12, dashboard_theme_mode), use_container_width=True)
     with summary_col:
         render_today_decision_box(
             signal_text,
@@ -2068,7 +2068,7 @@ def render_dashboard_page() -> None:
             second_target,
             dashboard_theme_mode,
         ),
-        width="stretch",
+        use_container_width=True,
     )
 
     st.markdown("### Bilgilendirme")
@@ -2662,7 +2662,7 @@ def render_trade_journal_page() -> None:
     if not closed_trades:
         st.info("Kapalı işlem yok.")
         return
-    st.dataframe(pd.DataFrame(closed_trades), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(closed_trades), use_container_width=True)
     st.caption(DISCLAIMER)
 
 

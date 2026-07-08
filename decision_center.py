@@ -226,7 +226,8 @@ def ai_comment(decision: dict[str, object], scores: dict[str, int]) -> str:
 
 def render_progress_bars(scores: dict[str, int]) -> None:
     for label in ["Trend", "Momentum", "Hacim", "Risk", "Volatilite", "ADX"]:
-        st.progress(scores[label], text=f"{label}: %{scores[label]}")
+        st.caption(f"{label}: %{scores[label]}")
+        st.progress(scores[label])
 
 
 def _mini_card(label: str, value: str, extra_class: str = "") -> str:
@@ -372,7 +373,7 @@ def render_premium_decision_center(
         with center_col:
             _render_html(center_html, height=540)
         with right_col:
-            st.plotly_chart(confidence_gauge(int(decision["confidence"]), theme_mode), width="stretch")
+            st.plotly_chart(confidence_gauge(int(decision["confidence"]), theme_mode), use_container_width=True)
             render_progress_bars(scores)
     else:
         left_col, center_col = st.columns([0.82, 1.55])
@@ -393,4 +394,4 @@ def render_premium_decision_center(
     _render_metric_grid(metric_cards)
 
     if show_diagnostics:
-        st.plotly_chart(radar_chart(scores, theme_mode), width="stretch")
+        st.plotly_chart(radar_chart(scores, theme_mode), use_container_width=True)
