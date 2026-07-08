@@ -1,6 +1,8 @@
 import pandas as pd
 import plotly.graph_objects as go
+import re
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 from datetime import datetime
 from html import escape
@@ -10,6 +12,7 @@ from plotly.subplots import make_subplots
 import analytics as nova_analytics
 import decision_center as nova_decision
 import scanner as nova_scanner
+import user_store
 from theme import apply_terminal_theme, init_theme_state, set_theme_from_toggle, theme_tokens
 
 DECISION_SUPPORT_DISCLAIMER = "Bu platform yalnızca karar destek amaçlıdır. Kesin yatırım tavsiyesi vermez."
@@ -21,6 +24,14 @@ SMART_SCAN_MODES = {
     "Geniş Tarama: İlk 150 hisse": 150,
     "Tam Tarama: Tüm BIST": None,
 }
+SMART_SCANNER_HORIZONS = [
+    "1-5 gün",
+    "5-10 gün",
+    "10-30 gün",
+    "1-2 ay",
+    "2-4 ay",
+]
+SMART_SCANNER_CALC_VERSION = "smart-scanner-news-impact-v1"
 
 GLOBAL_TICKERS = [
     "AAPL",
@@ -57,17 +68,23 @@ TIMEFRAME_WINDOWS = {
     "1 Yıllık": 252,
 }
 
+PUBLIC_DASHBOARD_PAGE = "Dashboard"
+SMART_SCANNER_PAGE = "🔐 Smart Scanner"
+YEB_PRO_PAGE = "⭐ YEB PRO"
 PAGES = [
-    "🏠 Dashboard",
-    "📈 Piyasa Tarayıcı",
-    "🔥 Smart Scanner",
-    "📈 Teknik Analiz",
-    "🧠 AI Analizi",
-    "📰 Haber Merkezi",
-    "📊 Portföy Takibi",
-    "⭐ Favoriler",
-    "⚙ Ayarlar",
+    PUBLIC_DASHBOARD_PAGE,
+    SMART_SCANNER_PAGE,
+    YEB_PRO_PAGE,
 ]
+PRO_MODULES = [
+    "Aldım",
+    "Sattım",
+    "Pozisyon Takibi",
+    "Simülasyon",
+    "Trade Journal",
+    "Bildirimler",
+]
+DEFAULT_PRO_MODULE = "Pozisyon Takibi"
 
 
 def stop_app() -> None:
@@ -77,6 +94,66 @@ def stop_app() -> None:
 
 def sync_manual_ticker() -> None:
     st.session_state.manual_ticker = st.session_state.quick_ticker
+
+
+def current_timestamp_label() -> str:
+    return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+
+def init_access_state() -> None:
+    if "is_authenticated" not in st.session_state:
+        st.session_state.is_authenticated = False
+    if "auth_user" not in st.session_state:
+        st.session_state.auth_user = ""
+    if "yeb_pro_active" not in st.session_state:
+        st.session_state.yeb_pro_active = False
+    if "yeb_data_user" not in st.session_state:
+        st.session_state.yeb_data_user = ""
+    if "yeb_open_positions" not in st.session_state:
+        st.session_state.yeb_open_positions = []
+    if "yeb_closed_trades" not in st.session_state:
+        st.session_state.yeb_closed_trades = []
+    if "yeb_pro_module" not in st.session_state:
+        st.session_state.yeb_pro_module = DEFAULT_PRO_MODULE
+
+
+def is_authenticated() -> bool:
+    return bool(st.session_state.get("is_authenticated", False))
+
+
+def has_pro_access() -> bool:
+    return bool(st.session_state.get("yeb_pro_active", False))
+
+
+def current_auth_user() -> str:
+    return str(st.session_state.get("auth_user", "")).strip().lower()
+
+
+def load_current_user_pro_data() -> None:
+    username = current_auth_user()
+    if not username or st.session_state.get("yeb_data_user") == username:
+        return
+    st.session_state.yeb_open_positions = user_store.load_open_positions(username)
+    st.session_state.yeb_closed_trades = user_store.load_closed_trades(username)
+    st.session_state.yeb_data_user = username
+
+
+def save_current_user_pro_data() -> None:
+    username = current_auth_user()
+    if not username:
+        return
+    user_store.save_open_positions(username, st.session_state.get("yeb_open_positions", []))
+    user_store.save_closed_trades(username, st.session_state.get("yeb_closed_trades", []))
+    st.session_state.yeb_data_user = username
+
+
+def logout_current_user() -> None:
+    st.session_state.is_authenticated = False
+    st.session_state.auth_user = ""
+    st.session_state.yeb_pro_active = False
+    st.session_state.yeb_data_user = ""
+    st.session_state.yeb_open_positions = []
+    st.session_state.yeb_closed_trades = []
 
 
 @st.cache_data(show_spinner=False)
@@ -143,6 +220,14 @@ def render_sidebar() -> str:
             unsafe_allow_html=True,
         )
         page = st.radio("Menü", PAGES, label_visibility="collapsed")
+        st.markdown('<div class="nova-sidebar-line"></div>', unsafe_allow_html=True)
+        if is_authenticated():
+            st.caption(f"Oturum: {st.session_state.auth_user}")
+            if st.button("Çıkış Yap", width="stretch"):
+                logout_current_user()
+                st.rerun()
+        else:
+            st.caption("Smart Scanner için giriş gerekir.")
         st.markdown('<div class="nova-sidebar-line"></div>', unsafe_allow_html=True)
         st.toggle(
             "☀️ Light Mode",
@@ -696,6 +781,7 @@ def sell_or_avoid_text(latest: pd.Series) -> str:
     return text
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def create_price_chart(
     data: pd.DataFrame,
     ticker: str,
@@ -705,6 +791,7 @@ def create_price_chart(
     stop_loss: float | None = None,
     first_target: float | None = None,
     second_target: float | None = None,
+    theme_mode: str = "dark",
 ) -> go.Figure:
     tokens = theme_tokens()
     fig = make_subplots(
@@ -827,7 +914,8 @@ def create_price_chart(
     return fig
 
 
-def create_score_gauge(score: int) -> go.Figure:
+@st.cache_data(ttl=900, show_spinner=False)
+def create_score_gauge(score: int, theme_mode: str = "dark") -> go.Figure:
     tokens = theme_tokens()
     fig = go.Figure(
         go.Indicator(
@@ -1189,7 +1277,7 @@ def load_market_data(ticker: str, period_label: str) -> pd.DataFrame:
             progress=False,
             auto_adjust=True,
             multi_level_index=False,
-            timeout=15,
+            timeout=8,
         )
     except Exception:
         st.error(
@@ -1325,8 +1413,32 @@ def render_badge(value: object) -> str:
     return f'<span class="nova-scan-badge {scan_badge_class(value)}">{text}</span>'
 
 
+def render_percent_impact_badge(value: object) -> str:
+    numeric_value = safe_float(value)
+    if numeric_value > 0:
+        badge_class = "positive"
+        text = f"+%{format_number(numeric_value)}"
+    elif numeric_value < 0:
+        badge_class = "negative"
+        text = f"-%{format_number(abs(numeric_value))}"
+    else:
+        badge_class = "neutral"
+        text = "%0.0"
+    return f'<span class="nova-scan-badge {badge_class}">{escape(text)}</span>'
+
+
 def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
-    header = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    sortable_columns = {"AI Güven Endeksi", "Beklenen Getiri %", "Haber Etkisi %", "Haber Dahil Getiri %"}
+    header_cells = []
+    for index, column in enumerate(columns):
+        if column in sortable_columns:
+            header_cells.append(
+                f'<th class="nova-sortable" data-sortable="true" data-sort-index="{index}" '
+                f'data-column="{escape(column)}" title="Çift tıkla sırala">{escape(column)} <span class="nova-sort-mark">⇅</span></th>'
+            )
+        else:
+            header_cells.append(f"<th>{escape(column)}</th>")
+    header = "".join(header_cells)
     rows = []
     for _, row in table[columns].iterrows():
         cells = []
@@ -1334,48 +1446,74 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             value = row[column]
             if column == "Nova Skoru":
                 cells.append(f'<td><span class="nova-score-strong">{int(value)}/100</span></td>')
+            elif column == "Haber Etkisi %":
+                cells.append(f"<td>{render_percent_impact_badge(value)}</td>")
             elif column in {"Trend", "Sinyal", "Risk"}:
                 cells.append(f"<td>{render_badge(value)}</td>")
-            elif column in {"RSI", "Son Fiyat", "Günlük %"}:
+            elif column in {"RSI", "Son Fiyat", "Günlük %", "Beklenen Getiri %", "Haber Dahil Getiri %"}:
                 cells.append(f"<td>{escape(format_number(float(value)))}</td>")
             else:
                 cells.append(f"<td>{escape(str(value))}</td>")
         rows.append(f"<tr>{''.join(cells)}</tr>")
 
-    st.markdown(
+    table_height = min(900, max(220, 92 + (len(rows) * 58)))
+    components.html(
         f"""
         <style>
+            :root {{
+                color-scheme: dark;
+            }}
+            body {{
+                margin: 0;
+                background: transparent;
+                font-family: "Inter", "Segoe UI", sans-serif;
+            }}
             .nova-scan-table-wrap {{
                 width: 100%;
                 overflow-x: auto;
-                border: 1px solid var(--nova-border);
-                border-radius: var(--nova-radius);
-                background: var(--nova-card-bg);
-                box-shadow: var(--nova-shadow);
+                border: 1px solid var(--nova-border, rgba(148, 163, 184, 0.20));
+                border-radius: var(--nova-radius, 8px);
+                background: var(--nova-card-bg, #07111f);
+                box-shadow: var(--nova-shadow, 0 18px 42px rgba(2, 6, 23, 0.24));
             }}
             .nova-scan-table {{
                 width: 100%;
                 border-collapse: collapse;
                 min-width: 920px;
-                color: var(--nova-text);
+                color: var(--nova-text, #e5eefc);
             }}
             .nova-scan-table thead tr {{
                 background: rgba(15, 23, 42, 0.92);
             }}
             .nova-scan-table th {{
                 padding: 13px 14px;
-                color: var(--nova-muted);
+                color: var(--nova-muted, #93a4bc);
                 font-size: 0.74rem;
                 line-height: 1.25;
                 text-align: left;
                 text-transform: uppercase;
                 letter-spacing: 0.08em;
-                border-bottom: 1px solid var(--nova-border);
+                border-bottom: 1px solid var(--nova-border, rgba(148, 163, 184, 0.20));
                 white-space: nowrap;
+                user-select: none;
+            }}
+            .nova-scan-table th.nova-sortable {{
+                cursor: ns-resize;
+            }}
+            .nova-scan-table th.nova-sortable:hover,
+            .nova-scan-table th.nova-sortable.active {{
+                color: var(--nova-text, #e5eefc);
+                background: rgba(56, 189, 248, 0.08);
+            }}
+            .nova-sort-mark {{
+                color: var(--nova-cyan, #38bdf8);
+                font-size: 0.72rem;
+                margin-left: 6px;
+                opacity: 0.86;
             }}
             .nova-scan-table td {{
                 padding: 14px;
-                color: var(--nova-text);
+                color: var(--nova-text, #e5eefc);
                 font-size: 0.9rem;
                 line-height: 1.35;
                 border-bottom: 1px solid rgba(148, 163, 184, 0.14);
@@ -1394,7 +1532,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             }}
             .nova-score-strong {{
                 display: inline-block;
-                color: var(--nova-text);
+                color: var(--nova-text, #e5eefc);
                 font-size: 1.12rem;
                 font-weight: 840;
                 line-height: 1;
@@ -1439,8 +1577,46 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
                 <tbody>{''.join(rows)}</tbody>
             </table>
         </div>
+        <script>
+            (() => {{
+                const table = document.querySelector(".nova-scan-table");
+                if (!table) return;
+                const tbody = table.querySelector("tbody");
+                const directions = {{}};
+                const numericValue = (row, index) => {{
+                    const text = row.children[index]?.innerText || "";
+                    const normalized = text.replace(",", ".");
+                    const match = normalized.match(/-?\\d+(\\.\\d+)?/);
+                    return match ? Number.parseFloat(match[0]) : 0;
+                }};
+                table.querySelectorAll("th[data-sortable='true']").forEach((header) => {{
+                    header.addEventListener("dblclick", () => {{
+                        const index = Number.parseInt(header.dataset.sortIndex, 10);
+                        const column = header.dataset.column;
+                        const direction = directions[column] === "desc" ? "asc" : "desc";
+                        directions[column] = direction;
+                        const rows = Array.from(tbody.querySelectorAll("tr"));
+                        rows.sort((left, right) => {{
+                            const leftValue = numericValue(left, index);
+                            const rightValue = numericValue(right, index);
+                            return direction === "desc" ? rightValue - leftValue : leftValue - rightValue;
+                        }});
+                        rows.forEach((row) => tbody.appendChild(row));
+                        table.querySelectorAll("th[data-sortable='true']").forEach((item) => {{
+                            item.classList.remove("active");
+                            const mark = item.querySelector(".nova-sort-mark");
+                            if (mark) mark.textContent = "⇅";
+                        }});
+                        header.classList.add("active");
+                        const mark = header.querySelector(".nova-sort-mark");
+                        if (mark) mark.textContent = direction === "desc" ? "↓" : "↑";
+                    }});
+                }});
+            }})();
+        </script>
         """,
-        unsafe_allow_html=True,
+        height=table_height,
+        scrolling=True,
     )
 
 
@@ -1545,10 +1721,13 @@ def render_market_scanner_page() -> None:
 
     with st.spinner("BIST hisseleri taranıyor..."):
         scanner_table, failed_tickers = scan_bist_market(tuple(symbols_to_scan))
+    st.session_state.scanner_scan_time = current_timestamp_label()
 
     if scanner_table.empty:
         st.error("Piyasa taraması için veri alınamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin.")
         return
+
+    st.caption(f"Tarama zamanı: {st.session_state.scanner_scan_time}")
 
     st.markdown("### 🔥 Bugünün En Güçlü 5 Hissesi")
     top_rows = scanner_table.head(5)
@@ -1584,6 +1763,17 @@ def render_smart_scanner_page() -> None:
         '<div class="nova-subtitle">BIST hisselerini Nova AI karar motoru ile filtreler ve fırsat listesini oluşturur.</div>',
         unsafe_allow_html=True,
     )
+    if st.session_state.get("smart_scanner_calc_version") != SMART_SCANNER_CALC_VERSION:
+        for key in (
+            "smart_scanner_results",
+            "smart_scanner_failed_tickers",
+            "smart_scanner_scanned_count",
+            "smart_scanner_scan_time",
+            "smart_scanner_selected_horizon",
+        ):
+            st.session_state.pop(key, None)
+        st.session_state.smart_scanner_calc_version = SMART_SCANNER_CALC_VERSION
+
     bist_symbols = get_bist_symbols_or_stop()
 
     symbol_rows_df = bist_symbols[["symbol", "name"]]
@@ -1598,6 +1788,12 @@ def render_smart_scanner_page() -> None:
     scan_limit = SMART_SCAN_MODES[scan_mode]
     target_symbol_rows = symbol_rows[:scan_limit] if scan_limit is not None else symbol_rows
     target_count = len(target_symbol_rows)
+    selected_scan_horizon = st.radio(
+        "İşlem Vadesi",
+        SMART_SCANNER_HORIZONS,
+        horizontal=True,
+        key="smart_scan_horizon",
+    )
 
     scan_requested = st.button("Piyasayı Yeniden Tara", type="primary", width="stretch")
     if scan_requested:
@@ -1610,6 +1806,7 @@ def render_smart_scanner_page() -> None:
         with st.spinner("Smart Scanner CSV listesindeki tüm BIST hisselerini tarıyor..."):
             scanner_table, failed_tickers, timed_out, scanned_count = nova_scanner.scan_smart_market(
                 target_symbol_rows,
+                selected_horizon=selected_scan_horizon,
                 max_seconds=60,
                 progress_callback=update_scan_progress,
             )
@@ -1622,7 +1819,9 @@ def render_smart_scanner_page() -> None:
             st.session_state.smart_scanner_results = scanner_table
             st.session_state.smart_scanner_failed_tickers = failed_tickers
             st.session_state.smart_scanner_scanned_count = scanned_count
-            st.session_state.smart_scanner_scan_time = datetime.now().strftime("%H:%M")
+            st.session_state.smart_scanner_scan_time = current_timestamp_label()
+            st.session_state.smart_scanner_selected_horizon = selected_scan_horizon
+            st.session_state.smart_scanner_calc_version = SMART_SCANNER_CALC_VERSION
 
     scanner_table = st.session_state.get("smart_scanner_results")
     failed_tickers = st.session_state.get("smart_scanner_failed_tickers", [])
@@ -1670,15 +1869,11 @@ def render_smart_scanner_page() -> None:
             "Sinyal",
             "AI Güven Endeksi",
             "Beklenen Getiri %",
+            "Haber Etkisi %",
+            "Haber Dahil Getiri %",
             "Beklenen Taşıma Süresi",
             "Trend",
         ])
-
-    st.markdown("### 🏆 En Güçlü İlk 50 Hisse")
-    if filtered_table.empty:
-        st.info("Filtrelere uyan hisse bulunamadı.")
-    else:
-        render_top_50_scroller(filtered_table)
 
     st.markdown("### Nova BIST Tarama Tablosu")
     smart_table = filtered_table.rename(columns={"Nova Score": "Nova Skoru", "Sonuç": "Sinyal", "Sat Riski %": "Risk"})
@@ -1688,6 +1883,8 @@ def render_smart_scanner_page() -> None:
         "Sinyal",
         "AI Güven Endeksi",
         "Beklenen Getiri %",
+        "Haber Etkisi %",
+        "Haber Dahil Getiri %",
         "Beklenen Taşıma Süresi",
         "Alım Uygunluğu %",
         "Risk",
@@ -1723,6 +1920,7 @@ def render_smart_scanner_page() -> None:
 def render_dashboard_page() -> None:
     st.title("NOVA AI")
     st.markdown('<div class="nova-subtitle">Analyze Smarter. Decide Better.</div>', unsafe_allow_html=True)
+    dashboard_theme_mode = st.session_state.get("theme_mode", "dark")
     bist_symbols = get_bist_symbols_or_stop()
 
     if "quick_ticker" not in st.session_state:
@@ -1762,6 +1960,7 @@ def render_dashboard_page() -> None:
         stop_app()
 
     data = load_market_data(ticker, period_label)
+    st.caption(f"Analiz zamanı: {current_timestamp_label()}")
     latest = data.iloc[-1]
     general_score, score_reasons = calculate_general_score(latest)
     signal_text, signal_detail, signal_class = decision_signal(general_score)
@@ -1833,14 +2032,14 @@ def render_dashboard_page() -> None:
     st.markdown("### Gauge + Teknik Barlar")
     gauge_col, bars_col = st.columns([0.95, 1.45])
     with gauge_col:
-        st.plotly_chart(create_score_gauge(general_score), width="stretch")
+        st.plotly_chart(create_score_gauge(general_score, dashboard_theme_mode), width="stretch")
     with bars_col:
         nova_decision.render_progress_bars(radar_scores_v12)
 
     st.markdown("### Radar + AI Analiz Özeti")
     radar_col, summary_col = st.columns([1.05, 1.15])
     with radar_col:
-        st.plotly_chart(nova_decision.radar_chart(radar_scores_v12), width="stretch")
+        st.plotly_chart(nova_decision.radar_chart(radar_scores_v12, dashboard_theme_mode), width="stretch")
     with summary_col:
         render_today_decision_box(
             signal_text,
@@ -1863,6 +2062,7 @@ def render_dashboard_page() -> None:
             stop_loss,
             first_target,
             second_target,
+            dashboard_theme_mode,
         ),
         width="stretch",
     )
@@ -1911,13 +2111,592 @@ def render_coming_soon_page(page: str) -> None:
     )
 
 
+def render_login_page() -> bool:
+    st.title("Smart Scanner Girişi")
+    st.markdown(
+        '<div class="nova-subtitle">Smart Scanner ücretsiz üyelik ile kullanılabilir.</div>',
+        unsafe_allow_html=True,
+    )
+    with st.form("smart_scanner_login_form"):
+        username = st.text_input("Kullanıcı Adı")
+        password = st.text_input("Şifre", type="password")
+        submitted = st.form_submit_button("Giriş Yap", type="primary")
+
+    if not submitted:
+        return False
+
+    user = user_store.authenticate(username, password)
+    if user:
+        st.session_state.is_authenticated = True
+        st.session_state.auth_user = user["username"]
+        st.session_state.yeb_pro_active = bool(user["is_pro"])
+        st.session_state.yeb_data_user = ""
+        load_current_user_pro_data()
+        st.success("Giriş başarılı.")
+        return True
+
+    st.error("Kullanıcı adı veya şifre hatalı.")
+    return False
+
+
+def render_pro_locked_page() -> None:
+    st.title("YEB PRO")
+    st.markdown(
+        """
+        <div class="nova-coming-soon">
+            <div class="nova-coming-inner">
+                <div class="nova-coming-icon">⭐</div>
+                <div class="nova-coming-title">Bu bölüm YEB Pro üyelerine özeldir.</div>
+                <div class="nova-coming-text">Pro modülleri aktif üyelik gerektirir.</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption("Pro erişimi için size verilen kullanıcı adı ve şifre ile giriş yapın.")
+    st.button("Pro'ya Geç", type="primary")
+
+
+def holding_period_to_days(text: str) -> int:
+    normalized = str(text).lower()
+    numbers = [int(match) for match in re.findall(r"\d+", normalized)]
+    if not numbers:
+        return 1
+    value = max(numbers)
+    if "ay" in normalized:
+        return value * 30
+    return value
+
+
+def build_buy_snapshot(symbol: str, quantity: int) -> dict[str, object]:
+    data = load_market_data(symbol, DEFAULT_PERIOD_LABEL)
+    latest = data.iloc[-1]
+    score, _ = calculate_general_score(latest)
+    confidence = nova_confidence_index(latest)
+    support_level, resistance_level = support_resistance(data)
+    selected_horizon = "Kısa vade"
+    expected_return = expected_return_potential(latest, resistance_level, selected_horizon)
+    holding_period = expected_holding_period(latest, selected_horizon)
+    sell_probability = sell_signal_probability(latest, score, selected_horizon)
+    first_target, second_target, stop_loss, risk_reward = target_stop_levels(
+        latest,
+        support_level,
+        resistance_level,
+        expected_return,
+    )
+    now = datetime.now()
+    return {
+        "id": f"{symbol}-{now.strftime('%Y%m%d%H%M%S')}",
+        "Hisse": symbol,
+        "Alış Tarihi": now.date().isoformat(),
+        "Alış Saati": now.strftime("%H:%M:%S"),
+        "Alış Fiyatı": round(float(latest["Close"]), 2),
+        "Lot / Adet": int(quantity),
+        "Nova Skoru": int(score),
+        "AI Güven": int(confidence),
+        "Beklenen Getiri": float(expected_return),
+        "Beklenen Taşıma Süresi": holding_period,
+        "Taşıma Gün Hedefi": holding_period_to_days(holding_period),
+        "Stop Loss": round(float(stop_loss), 2),
+        "Hedef 1": round(float(first_target), 2),
+        "Hedef 2": round(float(second_target), 2),
+        "Sat Riski": int(sell_probability),
+        "Risk/Getiri": risk_reward,
+        "Analiz Zamanı": now.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def position_tracking_row(position: dict[str, object]) -> tuple[dict[str, object], list[str]]:
+    symbol = str(position["Hisse"])
+    data = load_market_data(symbol, DEFAULT_PERIOD_LABEL)
+    latest = data.iloc[-1]
+    current_price = round(float(latest["Close"]), 2)
+    buy_price = float(position["Alış Fiyatı"])
+    stop_loss = float(position["Stop Loss"])
+    target_1 = float(position["Hedef 1"])
+    target_2 = float(position["Hedef 2"])
+    buy_date = datetime.fromisoformat(str(position["Alış Tarihi"]))
+    held_days = max(0, (datetime.now().date() - buy_date.date()).days)
+    total_days = int(position.get("Taşıma Gün Hedefi", 1))
+    remaining_days = max(0, total_days - held_days)
+    pnl_pct = round(((current_price - buy_price) / buy_price) * 100, 2) if buy_price else 0.0
+    stop_distance = round(((current_price - stop_loss) / current_price) * 100, 2) if current_price else 0.0
+    target_1_distance = round(((target_1 - current_price) / current_price) * 100, 2) if current_price else 0.0
+    target_2_distance = round(((target_2 - current_price) / current_price) * 100, 2) if current_price else 0.0
+    target_1_progress = round(((current_price - buy_price) / max(target_1 - buy_price, 0.01)) * 100, 2)
+    target_2_progress = round(((current_price - buy_price) / max(target_2 - buy_price, 0.01)) * 100, 2)
+    sell_risk = int(position["Sat Riski"])
+
+    alerts = []
+    if stop_distance <= 2:
+        alerts.append("Stop seviyesine yaklaşıldı")
+    if held_days >= total_days:
+        alerts.append("Taşıma süresi doldu")
+    if current_price >= target_1:
+        alerts.append("Hedef 1 görüldü")
+    if current_price >= target_2:
+        alerts.append("Hedef 2 görüldü")
+    if sell_risk >= 70:
+        alerts.append("Sat riski yükseldi")
+
+    return (
+        {
+            "Hisse": symbol,
+            "Alış fiyatı": buy_price,
+            "Güncel fiyat": current_price,
+            "Kâr/Zarar %": pnl_pct,
+            "Kaç gündür taşınıyor": held_days,
+            "Kalan gün": remaining_days,
+            "Sat riski %": sell_risk,
+            "Stop’a uzaklık %": stop_distance,
+            "Hedef 1’e uzaklık %": target_1_distance,
+            "Hedef 2’ye uzaklık %": target_2_distance,
+            "Hedef 1 ilerleme %": target_1_progress,
+            "Hedef 2 ilerleme %": target_2_progress,
+            "Taşıma Gün Hedefi": total_days,
+            "Uyarılar": ", ".join(alerts) if alerts else "-",
+        },
+        alerts,
+    )
+
+
+def close_position(position: dict[str, object], sell_price: float, sell_date: object) -> dict[str, object]:
+    buy_price = float(position["Alış Fiyatı"])
+    buy_date = datetime.fromisoformat(str(position["Alış Tarihi"])).date()
+    if hasattr(sell_date, "isoformat"):
+        close_date = sell_date
+    else:
+        close_date = datetime.fromisoformat(str(sell_date)).date()
+    held_days = max(0, (close_date - buy_date).days)
+    pnl_pct = round(((float(sell_price) - buy_price) / buy_price) * 100, 2) if buy_price else 0.0
+    return {
+        **position,
+        "Satış Fiyatı": round(float(sell_price), 2),
+        "Satış Tarihi": close_date.isoformat(),
+        "Kâr/Zarar %": pnl_pct,
+        "Kaç gün taşındı": held_days,
+        "Hedef 1 görüldü mü": "Evet" if float(sell_price) >= float(position["Hedef 1"]) else "Hayır",
+        "Hedef 2 görüldü mü": "Evet" if float(sell_price) >= float(position["Hedef 2"]) else "Hayır",
+        "Stop çalıştı mı": "Evet" if float(sell_price) <= float(position["Stop Loss"]) else "Hayır",
+    }
+
+
+def position_label(position: dict[str, object]) -> str:
+    return f"{position['Hisse']} | {position['Lot / Adet']} lot | {position['Alış Tarihi']}"
+
+
+def render_pro_buy_page() -> None:
+    load_current_user_pro_data()
+    st.markdown("### Aldım")
+    bist_symbols = get_bist_symbols_or_stop()
+    symbol = st.selectbox(
+        "Hisse",
+        bist_symbols["symbol"].tolist(),
+        format_func=lambda value: symbol_label(value, bist_symbols),
+    )
+    quantity = st.number_input("Lot / adet", min_value=1, value=1, step=1)
+    if st.button("ALDIM", type="primary"):
+        position = build_buy_snapshot(symbol, int(quantity))
+        st.session_state.yeb_open_positions.append(position)
+        save_current_user_pro_data()
+        st.success(f"{symbol} pozisyonu kaydedildi.")
+    st.caption(DISCLAIMER)
+
+
+def render_pro_positions_page() -> None:
+    load_current_user_pro_data()
+    st.markdown("### Pozisyon Takibi")
+    positions = st.session_state.get("yeb_open_positions", [])
+    if not positions:
+        st.info("Açık pozisyon yok.")
+        return
+
+    st.markdown(
+        """
+        <style>
+            .yeb-position-card {
+                border: 1px solid var(--nova-border);
+                border-radius: var(--nova-radius);
+                background: var(--nova-card-bg);
+                box-shadow: var(--nova-shadow);
+                padding: 16px;
+                overflow: hidden;
+                margin-bottom: 14px;
+            }
+            .yeb-position-top {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 14px;
+            }
+            .yeb-position-symbol {
+                color: var(--nova-text);
+                font-size: 1.15rem;
+                font-weight: 840;
+                line-height: 1.2;
+            }
+            .yeb-position-sub {
+                color: var(--nova-muted);
+                font-size: 0.82rem;
+                margin-top: 3px;
+                line-height: 1.35;
+            }
+            .yeb-pnl {
+                border-radius: 999px;
+                padding: 7px 11px;
+                font-size: 0.84rem;
+                font-weight: 820;
+                line-height: 1;
+                white-space: nowrap;
+            }
+            .yeb-pnl.positive {
+                color: #bbf7d0;
+                background: rgba(34, 197, 94, 0.16);
+                border: 1px solid rgba(34, 197, 94, 0.42);
+            }
+            .yeb-pnl.negative {
+                color: #fecaca;
+                background: rgba(239, 68, 68, 0.15);
+                border: 1px solid rgba(239, 68, 68, 0.40);
+            }
+            .yeb-position-grid {
+                display: grid;
+                grid-template-columns: repeat(6, minmax(0, 1fr));
+                gap: 10px;
+                margin: 12px 0 14px;
+            }
+            .yeb-position-metric.targets {
+                grid-column: span 2;
+            }
+            .yeb-position-metric {
+                border: 1px solid rgba(148, 163, 184, 0.16);
+                border-radius: var(--nova-radius);
+                background: rgba(15, 23, 42, 0.30);
+                padding: 11px;
+                min-height: 82px;
+            }
+            .yeb-position-label {
+                color: var(--nova-muted);
+                font-size: 0.72rem;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                line-height: 1.25;
+            }
+            .yeb-position-value {
+                color: var(--nova-text);
+                font-size: 1.03rem;
+                font-weight: 780;
+                line-height: 1.25;
+                margin-top: 7px;
+                overflow-wrap: anywhere;
+            }
+            .yeb-progress-shell {
+                height: 9px;
+                border-radius: 999px;
+                background: rgba(148, 163, 184, 0.18);
+                overflow: hidden;
+                margin-top: 8px;
+            }
+            .yeb-progress-fill {
+                height: 100%;
+                border-radius: 999px;
+                background: linear-gradient(90deg, var(--nova-cyan), var(--nova-green));
+            }
+            .yeb-progress-fill.negative {
+                background: linear-gradient(90deg, var(--nova-red), #f97316);
+            }
+            .yeb-target-line {
+                display: grid;
+                grid-template-columns: 38px 20px 1fr auto;
+                align-items: center;
+                gap: 8px;
+                margin-top: 9px;
+            }
+            .yeb-target-name {
+                color: var(--nova-text);
+                font-size: 0.82rem;
+                font-weight: 820;
+            }
+            .yeb-target-zero {
+                color: var(--nova-muted);
+                font-size: 0.72rem;
+                font-weight: 780;
+                text-align: right;
+                position: relative;
+            }
+            .yeb-target-zero::after {
+                content: "";
+                position: absolute;
+                right: -5px;
+                top: -4px;
+                width: 1px;
+                height: 18px;
+                background: rgba(148, 163, 184, 0.55);
+            }
+            .yeb-target-track {
+                height: 9px;
+                border-radius: 999px;
+                background: rgba(148, 163, 184, 0.18);
+                overflow: hidden;
+            }
+            .yeb-target-pct {
+                color: var(--nova-muted);
+                font-size: 0.78rem;
+                font-weight: 720;
+                white-space: nowrap;
+            }
+            .yeb-target-pct.negative {
+                color: #fecaca;
+            }
+            .yeb-detail-grid {
+                display: grid;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 8px;
+                margin-top: 10px;
+            }
+            .yeb-detail-item {
+                border: 1px solid rgba(148, 163, 184, 0.12);
+                border-radius: var(--nova-radius);
+                background: rgba(2, 6, 23, 0.18);
+                padding: 9px 10px;
+            }
+            .yeb-detail-label {
+                color: var(--nova-muted);
+                font-size: 0.68rem;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                line-height: 1.25;
+            }
+            .yeb-detail-value {
+                color: var(--nova-text);
+                font-size: 0.92rem;
+                font-weight: 760;
+                line-height: 1.25;
+                margin-top: 4px;
+            }
+            .yeb-alert-row {
+                display: flex;
+                gap: 8px;
+                flex-wrap: wrap;
+                margin-top: 10px;
+            }
+            .yeb-alert-pill {
+                color: #fde68a;
+                background: rgba(245, 158, 11, 0.14);
+                border: 1px solid rgba(245, 158, 11, 0.38);
+                border-radius: 999px;
+                padding: 6px 10px;
+                font-size: 0.78rem;
+                font-weight: 720;
+                line-height: 1;
+            }
+            .yeb-alert-pill.empty {
+                color: var(--nova-muted);
+                background: rgba(148, 163, 184, 0.10);
+                border-color: rgba(148, 163, 184, 0.20);
+            }
+            @media (max-width: 1050px) {
+                .yeb-position-grid {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+                .yeb-position-metric.targets {
+                    grid-column: span 2;
+                }
+                .yeb-detail-grid {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+            }
+            @media (max-width: 560px) {
+                .yeb-position-top {
+                    flex-direction: column;
+                }
+                .yeb-position-grid {
+                    grid-template-columns: 1fr;
+                }
+                .yeb-position-metric.targets {
+                    grid-column: span 1;
+                }
+                .yeb-detail-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    for position in positions:
+        row, alerts = position_tracking_row(position)
+        progress_pct = min(100, round((row["Kaç gündür taşınıyor"] / max(row["Taşıma Gün Hedefi"], 1)) * 100, 1))
+        target_1_progress = float(row["Hedef 1 ilerleme %"])
+        target_2_progress = float(row["Hedef 2 ilerleme %"])
+        target_1_width = min(100, abs(target_1_progress))
+        target_2_width = min(100, abs(target_2_progress))
+        target_1_class = "negative" if target_1_progress < 0 else ""
+        target_2_class = "negative" if target_2_progress < 0 else ""
+        pnl_class = "positive" if float(row["Kâr/Zarar %"]) >= 0 else "negative"
+        alert_html = "".join(
+            f'<span class="yeb-alert-pill">{escape(alert)}</span>'
+            for alert in alerts
+        ) or '<span class="yeb-alert-pill empty">Aktif uyarı yok</span>'
+        st.markdown(
+            f"""
+            <div class="yeb-position-card">
+                <div class="yeb-position-top">
+                    <div>
+                        <div class="yeb-position-symbol">{escape(str(row["Hisse"]))}</div>
+                        <div class="yeb-position-sub">
+                            Alış: {format_number(float(row["Alış fiyatı"]))} • Güncel: {format_number(float(row["Güncel fiyat"]))}
+                        </div>
+                    </div>
+                    <div class="yeb-pnl {pnl_class}">%{format_number(float(row["Kâr/Zarar %"]))}</div>
+                </div>
+                <div class="yeb-position-grid">
+                    <div class="yeb-position-metric targets">
+                        <div class="yeb-position-label">Hedefler</div>
+                        <div class="yeb-target-line">
+                            <div class="yeb-target-name">H1</div>
+                            <div class="yeb-target-zero">0</div>
+                            <div class="yeb-target-track"><div class="yeb-progress-fill {target_1_class}" style="width:{target_1_width}%"></div></div>
+                            <div class="yeb-target-pct {target_1_class}">%{format_number(target_1_progress)} / kalan %{format_number(float(row["Hedef 1’e uzaklık %"]))}</div>
+                        </div>
+                        <div class="yeb-target-line">
+                            <div class="yeb-target-name">H2</div>
+                            <div class="yeb-target-zero">0</div>
+                            <div class="yeb-target-track"><div class="yeb-progress-fill {target_2_class}" style="width:{target_2_width}%"></div></div>
+                            <div class="yeb-target-pct {target_2_class}">%{format_number(target_2_progress)} / kalan %{format_number(float(row["Hedef 2’ye uzaklık %"]))}</div>
+                        </div>
+                    </div>
+                    <div class="yeb-position-metric">
+                        <div class="yeb-position-label">Taşıma Süresi</div>
+                        <div class="yeb-position-value">{row["Kaç gündür taşınıyor"]} / {row["Taşıma Gün Hedefi"]} gün</div>
+                        <div class="yeb-progress-shell"><div class="yeb-progress-fill" style="width:{progress_pct}%"></div></div>
+                    </div>
+                    <div class="yeb-position-metric">
+                        <div class="yeb-position-label">Kalan Gün</div>
+                        <div class="yeb-position-value">{row["Kalan gün"]}</div>
+                    </div>
+                    <div class="yeb-position-metric">
+                        <div class="yeb-position-label">Sat Riski</div>
+                        <div class="yeb-position-value">%{row["Sat riski %"]}</div>
+                    </div>
+                    <div class="yeb-position-metric">
+                        <div class="yeb-position-label">Stop Uzaklığı</div>
+                        <div class="yeb-position-value">%{format_number(float(row["Stop’a uzaklık %"]))}</div>
+                    </div>
+                </div>
+                <div class="yeb-detail-grid">
+                    <div class="yeb-detail-item">
+                        <div class="yeb-detail-label">Alış Fiyatı</div>
+                        <div class="yeb-detail-value">{format_number(float(row["Alış fiyatı"]))}</div>
+                    </div>
+                    <div class="yeb-detail-item">
+                        <div class="yeb-detail-label">Güncel Fiyat</div>
+                        <div class="yeb-detail-value">{format_number(float(row["Güncel fiyat"]))}</div>
+                    </div>
+                    <div class="yeb-detail-item">
+                        <div class="yeb-detail-label">Kâr/Zarar</div>
+                        <div class="yeb-detail-value">%{format_number(float(row["Kâr/Zarar %"]))}</div>
+                    </div>
+                    <div class="yeb-detail-item">
+                        <div class="yeb-detail-label">Kalan Gün</div>
+                        <div class="yeb-detail-value">{row["Kalan gün"]}</div>
+                    </div>
+                    <div class="yeb-detail-item">
+                        <div class="yeb-detail-label">Taşınan Gün</div>
+                        <div class="yeb-detail-value">{row["Kaç gündür taşınıyor"]}</div>
+                    </div>
+                    <div class="yeb-detail-item">
+                        <div class="yeb-detail-label">Sat Riski</div>
+                        <div class="yeb-detail-value">%{row["Sat riski %"]}</div>
+                    </div>
+                    <div class="yeb-detail-item">
+                        <div class="yeb-detail-label">Stop Uzaklığı</div>
+                        <div class="yeb-detail-value">%{format_number(float(row["Stop’a uzaklık %"]))}</div>
+                    </div>
+                    <div class="yeb-detail-item">
+                        <div class="yeb-detail-label">Hedef Uzaklıkları</div>
+                        <div class="yeb-detail-value">H1 %{format_number(float(row["Hedef 1’e uzaklık %"]))} / H2 %{format_number(float(row["Hedef 2’ye uzaklık %"]))}</div>
+                    </div>
+                </div>
+                <div class="yeb-alert-row">{alert_html}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.caption(DISCLAIMER)
+
+
+def render_pro_sell_page() -> None:
+    load_current_user_pro_data()
+    st.markdown("### Sattım")
+    positions = st.session_state.get("yeb_open_positions", [])
+    if not positions:
+        st.info("Satılacak açık pozisyon yok.")
+        return
+
+    selected_position = st.selectbox("Açık pozisyon", positions, format_func=position_label)
+    sell_price = st.number_input("Satış fiyatı", min_value=0.01, value=float(selected_position["Alış Fiyatı"]), step=0.01)
+    sell_date = st.date_input("Satış tarihi", value=datetime.now().date())
+    if st.button("SATTIM", type="primary"):
+        closed_trade = close_position(selected_position, sell_price, sell_date)
+        st.session_state.yeb_open_positions = [
+            position for position in positions if position["id"] != selected_position["id"]
+        ]
+        st.session_state.yeb_closed_trades.append(closed_trade)
+        save_current_user_pro_data()
+        st.success(f"{selected_position['Hisse']} pozisyonu kapatıldı.")
+    st.caption(DISCLAIMER)
+
+
+def render_trade_journal_page() -> None:
+    load_current_user_pro_data()
+    st.markdown("### Trade Journal")
+    closed_trades = st.session_state.get("yeb_closed_trades", [])
+    if not closed_trades:
+        st.info("Kapalı işlem yok.")
+        return
+    st.dataframe(pd.DataFrame(closed_trades), use_container_width=True, hide_index=True)
+    st.caption(DISCLAIMER)
+
+
+def render_yeb_pro_page() -> None:
+    if not has_pro_access():
+        render_pro_locked_page()
+        return
+
+    load_current_user_pro_data()
+    st.title("YEB PRO")
+    module = st.radio(
+        "Pro Menü",
+        PRO_MODULES,
+        index=PRO_MODULES.index(DEFAULT_PRO_MODULE),
+        horizontal=True,
+        key="yeb_pro_module",
+    )
+    if module == "Aldım":
+        render_pro_buy_page()
+    elif module == "Sattım":
+        render_pro_sell_page()
+    elif module == "Pozisyon Takibi":
+        render_pro_positions_page()
+    elif module == "Trade Journal":
+        render_trade_journal_page()
+    else:
+        render_coming_soon_page(f"⭐ {module}")
+
+
 def render_page(page: str) -> None:
-    if page == "🏠 Dashboard":
+    if page == PUBLIC_DASHBOARD_PAGE:
         render_dashboard_page()
-    elif page == "📈 Piyasa Tarayıcı":
-        render_market_scanner_page()
-    elif page == "🔥 Smart Scanner":
+    elif page == SMART_SCANNER_PAGE:
+        if not is_authenticated() and not render_login_page():
+            return
         render_smart_scanner_page()
+    elif page == YEB_PRO_PAGE:
+        render_yeb_pro_page()
     else:
         render_coming_soon_page(page)
 
@@ -1930,6 +2709,7 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
     init_theme_state()
+    init_access_state()
     apply_terminal_theme()
     selected_page = render_sidebar()
     render_page(selected_page)

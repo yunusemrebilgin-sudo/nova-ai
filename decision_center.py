@@ -143,7 +143,8 @@ def _render_html(body: str, height: int) -> None:
     components.html(_component_css() + body, height=height, scrolling=True)
 
 
-def confidence_gauge(value: int) -> go.Figure:
+@st.cache_data(ttl=900, show_spinner=False)
+def confidence_gauge(value: int, theme_mode: str = "dark") -> go.Figure:
     tokens = _tokens()
     fig = go.Figure(
         go.Indicator(
@@ -171,7 +172,8 @@ def confidence_gauge(value: int) -> go.Figure:
     return fig
 
 
-def radar_chart(scores: dict[str, int]) -> go.Figure:
+@st.cache_data(ttl=900, show_spinner=False)
+def radar_chart(scores: dict[str, int], theme_mode: str = "dark") -> go.Figure:
     tokens = _tokens()
     labels = ["Trend", "Teknik", "Momentum", "Hacim", "Risk", "Volatilite", "Temel"]
     values = [
@@ -314,6 +316,7 @@ def render_premium_decision_center(
     scores: dict[str, int],
     show_diagnostics: bool = True,
 ) -> None:
+    theme_mode = st.session_state.get("theme_mode", "dark")
     title = {
         "AL": "🟢 GÜÇLÜ ALIM",
         "TAKİP ET": "🟡 TAKİP ET",
@@ -369,7 +372,7 @@ def render_premium_decision_center(
         with center_col:
             _render_html(center_html, height=540)
         with right_col:
-            st.plotly_chart(confidence_gauge(int(decision["confidence"])), width="stretch")
+            st.plotly_chart(confidence_gauge(int(decision["confidence"]), theme_mode), width="stretch")
             render_progress_bars(scores)
     else:
         left_col, center_col = st.columns([0.82, 1.55])
@@ -390,4 +393,4 @@ def render_premium_decision_center(
     _render_metric_grid(metric_cards)
 
     if show_diagnostics:
-        st.plotly_chart(radar_chart(scores), width="stretch")
+        st.plotly_chart(radar_chart(scores, theme_mode), width="stretch")

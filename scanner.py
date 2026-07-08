@@ -5,9 +5,15 @@ import streamlit as st
 import yfinance as yf
 
 import analytics
+import news
 
 
-def _scan_row(symbol: str, name: str, raw_data: pd.DataFrame) -> dict[str, object] | None:
+def _scan_row(
+    symbol: str,
+    name: str,
+    raw_data: pd.DataFrame,
+    selected_horizon: str = "1-5 gün",
+) -> dict[str, object] | None:
     required = {"Open", "High", "Low", "Close", "Volume"}
     if raw_data.empty or not required.issubset(raw_data.columns):
         return None
@@ -21,13 +27,18 @@ def _scan_row(symbol: str, name: str, raw_data: pd.DataFrame) -> dict[str, objec
     buy = analytics.buy_suitability(score, latest)
     risk = analytics.sell_risk(score, latest)
     result = analytics.result_label(score, confidence, risk)
+    expected_return = analytics.expected_return(latest, resistance, selected_horizon)
+    news_impact = news.news_impact_percent(symbol, name)
+    news_adjusted_return = round(max(1.0, min(35.0, expected_return + news_impact)), 1)
     return {
         "Hisse": symbol,
         "Şirket": name,
         "Nova Score": score,
         "AI Güven Endeksi": confidence,
-        "Beklenen Getiri %": analytics.expected_return(latest, resistance),
-        "Beklenen Taşıma Süresi": analytics.expected_holding_period(latest),
+        "Beklenen Getiri %": expected_return,
+        "Haber Etkisi %": news_impact,
+        "Haber Dahil Getiri %": news_adjusted_return,
+        "Beklenen Taşıma Süresi": analytics.expected_holding_period(latest, selected_horizon),
         "Alım Uygunluğu %": buy,
         "Sat Riski %": risk,
         "Trend": analytics.trend_text(latest),
@@ -57,13 +68,14 @@ def download_price_data(symbol: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def scan_smart_symbol(symbol: str, name: str) -> dict[str, object] | None:
+def scan_smart_symbol(symbol: str, name: str, selected_horizon: str = "1-5 gün") -> dict[str, object] | None:
     raw_data = download_price_data(symbol)
-    return _scan_row(symbol, name, raw_data)
+    return _scan_row(symbol, name, raw_data, selected_horizon)
 
 
 def scan_smart_market(
     symbol_rows: tuple[tuple[str, str], ...],
+    selected_horizon: str = "1-5 gün",
     max_seconds: int = 60,
     progress_callback=None,
 ) -> tuple[pd.DataFrame, list[str], bool, int]:
@@ -79,7 +91,7 @@ def scan_smart_market(
             timed_out = True
             break
         try:
-            row = scan_smart_symbol(symbol, name)
+            row = scan_smart_symbol(symbol, name, selected_horizon)
         except Exception:
             row = None
         scanned += 1

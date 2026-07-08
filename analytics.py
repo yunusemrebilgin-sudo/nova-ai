@@ -165,25 +165,49 @@ def result_label(score: int, confidence: int, risk: int) -> str:
     return "🔴 Uzak Dur"
 
 
-def expected_holding_period(latest: pd.Series) -> str:
+def expected_holding_period(latest: pd.Series, selected_horizon: str = "Günlük işlem") -> str:
+    scanner_horizon_periods = {
+        "1-5 gün": "1-5 işlem günü",
+        "5-10 gün": "5-10 işlem günü",
+        "10-30 gün": "10-30 işlem günü",
+        "1-2 ay": "1-2 ay",
+        "2-4 ay": "2-4 ay",
+    }
+    if selected_horizon in scanner_horizon_periods:
+        return scanner_horizon_periods[selected_horizon]
+
     adx = safe_float(latest.get("ADX14"))
     volatility = safe_float(latest.get("VOLATILITY20"))
-    if adx >= 28 and volatility <= 3:
-        return "15-22 işlem günü"
-    if adx >= 22 and volatility <= 4:
-        return "8-13 işlem günü"
-    if adx >= 25:
-        return "2-4 ay"
-    return "8-13 işlem günü"
+
+    if selected_horizon == "Günlük işlem":
+        return "1-5 işlem günü" if volatility <= 4 else "1-3 işlem günü"
+    if selected_horizon == "Kısa vade":
+        if adx >= 25 and volatility <= 3:
+            return "12-18 işlem günü"
+        return "8-12 işlem günü"
+    if selected_horizon == "Orta vade":
+        if adx >= 25 and latest["EMA20"] > latest["EMA50"]:
+            return "2-4 ay"
+        return "20-35 işlem günü"
+    if adx >= 25 and latest["Close"] > latest["EMA50"]:
+        return "6-12 ay"
+    return "2-4 ay"
 
 
-def expected_return(latest: pd.Series, resistance: float) -> float:
+def expected_return(latest: pd.Series, resistance: float, selected_horizon: str | None = None) -> float:
     close = safe_float(latest["Close"])
     atr_pct = safe_float(latest.get("ATR_PCT"))
     volatility = safe_float(latest.get("VOLATILITY20"))
     resistance_gap = max(0.0, ((resistance - close) / close) * 100) if close else 0.0
     trend_bonus = 2.0 if latest["EMA20"] > latest["EMA50"] else 0.5
-    potential = atr_pct * 1.3 + resistance_gap * 0.55 + trend_bonus - volatility * 0.25
+    horizon_multiplier = {
+        "1-5 gün": 0.85,
+        "5-10 gün": 1.05,
+        "10-30 gün": 1.30,
+        "1-2 ay": 1.65,
+        "2-4 ay": 2.05,
+    }.get(selected_horizon, 1.3)
+    potential = atr_pct * horizon_multiplier + resistance_gap * 0.55 + trend_bonus - volatility * 0.25
     return round(max(1.0, min(35.0, potential)), 1)
 
 

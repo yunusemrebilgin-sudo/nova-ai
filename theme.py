@@ -112,6 +112,22 @@ def apply_terminal_theme() -> None:
                 overflow-x: hidden;
             }
 
+            [data-testid="stSidebar"] button,
+            [data-testid="collapsedControl"],
+            [data-testid="collapsedControl"] button {
+                color: var(--nova-text) !important;
+                opacity: 1 !important;
+            }
+
+            [data-testid="stSidebar"] button svg,
+            [data-testid="collapsedControl"] svg,
+            [data-testid="collapsedControl"] button svg {
+                color: var(--nova-text) !important;
+                fill: var(--nova-text) !important;
+                stroke: var(--nova-text) !important;
+                opacity: 1 !important;
+            }
+
             [data-testid="stSidebar"] h1,
             [data-testid="stSidebar"] h2,
             [data-testid="stSidebar"] h3,
@@ -163,6 +179,29 @@ def apply_terminal_theme() -> None:
                 font-size: 2.45rem !important;
                 font-weight: 820 !important;
                 letter-spacing: 0 !important;
+            }
+
+            h1 a,
+            h2 a,
+            h3 a,
+            h1 svg,
+            h2 svg,
+            h3 svg {
+                color: var(--nova-muted) !important;
+                fill: var(--nova-muted) !important;
+                opacity: 0.85 !important;
+            }
+
+            div[role="radiogroup"] label,
+            div[role="radiogroup"] label p,
+            div[role="radiogroup"] label span {
+                color: var(--nova-text) !important;
+                opacity: 1 !important;
+            }
+
+            div[role="radiogroup"] label:hover p,
+            div[role="radiogroup"] label:hover span {
+                color: var(--nova-text) !important;
             }
 
             h3 {
