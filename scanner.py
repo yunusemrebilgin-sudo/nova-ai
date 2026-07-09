@@ -100,7 +100,10 @@ def scan_smart_market(
         else:
             rows.append(row)
         if progress_callback is not None:
-            progress_callback(scanned, total)
+            try:
+                progress_callback(scanned, total)
+            except Exception:
+                progress_callback = None
 
     table = pd.DataFrame(rows)
     if not table.empty:
