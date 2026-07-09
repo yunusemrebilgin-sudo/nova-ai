@@ -1660,6 +1660,47 @@ def render_smart_summary_cards(scanner_table: pd.DataFrame, scanned_count: int, 
         render_value_card("Ortalama Nova Skoru", f"{average_score}/100")
 
 
+def run_smart_market_scan(
+    symbol_rows: tuple[tuple[str, str], ...],
+    selected_horizon: str,
+    max_seconds: int = 60,
+) -> tuple[pd.DataFrame, list[str], bool, int]:
+    try:
+        return nova_scanner.scan_smart_market(
+            symbol_rows,
+            selected_horizon=selected_horizon,
+            max_seconds=max_seconds,
+        )
+    except TypeError:
+        table, failed_tickers, timed_out, scanned_count = nova_scanner.scan_smart_market(
+            symbol_rows,
+            max_seconds=max_seconds,
+        )
+        if not table.empty and "Beklenen Taşıma Süresi" in table.columns:
+            table = table.copy()
+            table["Beklenen Taşıma Süresi"] = nova_analytics.expected_holding_period(
+                pd.Series(dtype="float64"),
+                selected_horizon,
+        )
+        return table, failed_tickers, timed_out, scanned_count
+
+
+def normalize_smart_scanner_table(table: pd.DataFrame | None) -> pd.DataFrame:
+    if table is None:
+        return pd.DataFrame()
+    if table.empty:
+        return table
+    normalized = table.copy()
+    if "Haber Etkisi %" not in normalized.columns:
+        normalized["Haber Etkisi %"] = 0.0
+    if "Haber Dahil Getiri %" not in normalized.columns:
+        if "Beklenen Getiri %" in normalized.columns:
+            normalized["Haber Dahil Getiri %"] = normalized["Beklenen Getiri %"]
+        else:
+            normalized["Haber Dahil Getiri %"] = 0.0
+    return normalized
+
+
 def render_top_50_scroller(table: pd.DataFrame) -> None:
     top_rows = list(table.head(50).iterrows())
     for offset in range(0, len(top_rows), 5):
@@ -1798,11 +1839,12 @@ def render_smart_scanner_page() -> None:
     scan_requested = st.button("Piyasayı Yeniden Tara", type="primary")
     if scan_requested:
         with st.spinner("Smart Scanner CSV listesindeki tüm BIST hisselerini tarıyor..."):
-            scanner_table, failed_tickers, timed_out, scanned_count = nova_scanner.scan_smart_market(
+            scanner_table, failed_tickers, timed_out, scanned_count = run_smart_market_scan(
                 target_symbol_rows,
-                selected_horizon=selected_scan_horizon,
+                selected_scan_horizon,
                 max_seconds=60,
             )
+        scanner_table = normalize_smart_scanner_table(scanner_table)
         st.caption(f"{scanned_count} / {target_count} hisse tarandı")
         if timed_out:
             st.warning("Tarama süresi uzadı. İlk sonuçlar gösteriliyor.")
@@ -1816,7 +1858,7 @@ def render_smart_scanner_page() -> None:
             st.session_state.smart_scanner_selected_horizon = selected_scan_horizon
             st.session_state.smart_scanner_calc_version = SMART_SCANNER_CALC_VERSION
 
-    scanner_table = st.session_state.get("smart_scanner_results")
+    scanner_table = normalize_smart_scanner_table(st.session_state.get("smart_scanner_results", pd.DataFrame()))
     failed_tickers = st.session_state.get("smart_scanner_failed_tickers", [])
     scanned_count = st.session_state.get("smart_scanner_scanned_count", len(symbol_rows))
     scan_time = st.session_state.get("smart_scanner_scan_time", "-")
