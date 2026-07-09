@@ -4,10 +4,11 @@ import re
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from plotly.subplots import make_subplots
+from zoneinfo import ZoneInfo
 
 import analytics as nova_analytics
 import decision_center as nova_decision
@@ -85,6 +86,14 @@ PRO_MODULES = [
     "Bildirimler",
 ]
 DEFAULT_PRO_MODULE = "Pozisyon Takibi"
+APP_TIMEZONE_NAME = "Europe/Istanbul"
+
+
+def app_timezone() -> timezone:
+    try:
+        return ZoneInfo(APP_TIMEZONE_NAME)
+    except Exception:
+        return timezone(timedelta(hours=3))
 
 
 def stop_app() -> None:
@@ -96,8 +105,12 @@ def sync_manual_ticker() -> None:
     st.session_state.manual_ticker = st.session_state.quick_ticker
 
 
+def now_istanbul() -> datetime:
+    return datetime.now(app_timezone())
+
+
 def current_timestamp_label() -> str:
-    return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    return now_istanbul().strftime("%d.%m.%Y %H:%M:%S")
 
 
 def init_access_state() -> None:
@@ -2219,7 +2232,7 @@ def build_buy_snapshot(symbol: str, quantity: int) -> dict[str, object]:
         resistance_level,
         expected_return,
     )
-    now = datetime.now()
+    now = now_istanbul()
     return {
         "id": f"{symbol}-{now.strftime('%Y%m%d%H%M%S')}",
         "Hisse": symbol,
@@ -2251,7 +2264,7 @@ def position_tracking_row(position: dict[str, object]) -> tuple[dict[str, object
     target_1 = float(position["Hedef 1"])
     target_2 = float(position["Hedef 2"])
     buy_date = datetime.fromisoformat(str(position["Alış Tarihi"]))
-    held_days = max(0, (datetime.now().date() - buy_date.date()).days)
+    held_days = max(0, (now_istanbul().date() - buy_date.date()).days)
     total_days = int(position.get("Taşıma Gün Hedefi", 1))
     remaining_days = max(0, total_days - held_days)
     pnl_pct = round(((current_price - buy_price) / buy_price) * 100, 2) if buy_price else 0.0
@@ -2674,7 +2687,7 @@ def render_pro_sell_page() -> None:
 
     selected_position = st.selectbox("Açık pozisyon", positions, format_func=position_label)
     sell_price = st.number_input("Satış fiyatı", min_value=0.01, value=float(selected_position["Alış Fiyatı"]), step=0.01)
-    sell_date = st.date_input("Satış tarihi", value=datetime.now().date())
+    sell_date = st.date_input("Satış tarihi", value=now_istanbul().date())
     if st.button("SATTIM", type="primary"):
         closed_trade = close_position(selected_position, sell_price, sell_date)
         st.session_state.yeb_open_positions = [
