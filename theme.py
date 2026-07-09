@@ -313,8 +313,102 @@ def apply_terminal_theme() -> None:
                 overflow-wrap: anywhere;
             }
 
+            .nova-horizon-card {
+                gap: 2px;
+            }
+
+            .nova-follow-label {
+                color: var(--nova-muted);
+                font-size: 0.68rem;
+                line-height: 1.2;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+                margin-top: 8px;
+                white-space: nowrap;
+            }
+
+            .nova-follow-track {
+                position: relative;
+                width: 100%;
+                height: 8px;
+                border-radius: 999px;
+                background: rgba(148, 163, 184, 0.20);
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                overflow: hidden;
+                margin: 6px 0 4px;
+            }
+
+            .nova-follow-window {
+                position: absolute;
+                top: 1px;
+                bottom: 1px;
+                min-width: 10px;
+                border-radius: 999px;
+                background: linear-gradient(90deg, var(--nova-green), var(--nova-cyan));
+                box-shadow: 0 0 12px rgba(34, 197, 94, 0.25);
+            }
+
+            .nova-horizon-decision {
+                color: var(--nova-text);
+                font-size: 0.9rem;
+                font-weight: 780;
+                line-height: 1.25;
+                margin-top: 8px;
+                overflow-wrap: anywhere;
+            }
+
+            .nova-pro-follow-detail {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: 10px 16px;
+                align-items: center;
+                margin-top: 0.25rem;
+                border-color: rgba(56, 189, 248, 0.34);
+                background:
+                    linear-gradient(135deg, rgba(56, 189, 248, 0.10), rgba(34, 197, 94, 0.07)),
+                    var(--nova-card-bg);
+            }
+
+            .nova-pro-follow-value {
+                color: var(--nova-text);
+                font-size: 1.18rem;
+                font-weight: 820;
+                line-height: 1.2;
+                padding: 0.56rem 0.72rem;
+                border-radius: var(--nova-radius);
+                background: rgba(56, 189, 248, 0.10);
+                border: 1px solid rgba(56, 189, 248, 0.26);
+                white-space: nowrap;
+            }
+
             .nova-info-card {
                 min-height: 112px;
+            }
+
+            .nova-ai-summary-card {
+                min-height: 100%;
+            }
+
+            .nova-ai-summary-card .nova-card-note {
+                line-height: 1.5;
+            }
+
+            .dc-metric-card {
+                min-height: 76px;
+                padding: 12px 14px;
+                justify-content: center;
+            }
+
+            .dc-metric-card .nova-card-title {
+                font-size: 0.68rem;
+                line-height: 1.2;
+                margin: 0;
+            }
+
+            .dc-metric-card .nova-card-value {
+                font-size: 1.08rem;
+                line-height: 1.18;
+                margin-top: 6px;
             }
 
             .nova-button-spacer {
@@ -499,6 +593,76 @@ def apply_terminal_theme() -> None:
                 color: inherit;
             }
 
+            .yeb-journal-card {
+                margin-bottom: 0.8rem;
+            }
+
+            .yeb-journal-top {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 12px;
+            }
+
+            .yeb-journal-symbol {
+                color: var(--nova-text);
+                font-size: 1.05rem;
+                font-weight: 850;
+                overflow-wrap: anywhere;
+            }
+
+            .yeb-journal-pnl {
+                border: 1px solid rgba(148, 163, 184, 0.22);
+                border-radius: 8px;
+                padding: 0.45rem 0.65rem;
+                font-weight: 850;
+                white-space: nowrap;
+            }
+
+            .yeb-journal-pnl.positive {
+                background: rgba(34, 197, 94, 0.10);
+                border-color: rgba(34, 197, 94, 0.30);
+                color: var(--nova-green);
+            }
+
+            .yeb-journal-pnl.negative {
+                background: rgba(239, 68, 68, 0.10);
+                border-color: rgba(239, 68, 68, 0.30);
+                color: var(--nova-red);
+            }
+
+            .yeb-journal-grid {
+                display: grid;
+                grid-template-columns: repeat(6, minmax(0, 1fr));
+                gap: 8px;
+                margin-top: 12px;
+            }
+
+            .yeb-journal-grid div {
+                min-width: 0;
+                border: 1px solid rgba(148, 163, 184, 0.14);
+                border-radius: 8px;
+                background: rgba(148, 163, 184, 0.07);
+                padding: 10px;
+            }
+
+            .yeb-journal-grid span {
+                display: block;
+                color: var(--nova-muted);
+                font-size: 0.66rem;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+                overflow-wrap: anywhere;
+            }
+
+            .yeb-journal-grid strong {
+                display: block;
+                color: var(--nova-text);
+                font-size: 0.9rem;
+                margin-top: 4px;
+                overflow-wrap: anywhere;
+            }
+
             [data-testid="stAlert"] {
                 background-color: var(--nova-panel-2);
                 color: var(--nova-text);
@@ -532,6 +696,34 @@ def apply_terminal_theme() -> None:
                     min-width: 0;
                     max-width: 100%;
                 }
+
+                .nova-pro-follow-detail {
+                    grid-template-columns: 1fr;
+                }
+
+                .nova-pro-follow-value {
+                    width: fit-content;
+                    white-space: normal;
+                }
+
+                .yeb-journal-grid {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+
+                .yeb-journal-top {
+                    flex-direction: column;
+                }
+            }
+
+            @media (min-width: 700px) and (max-width: 900px) {
+                [data-testid="stMain"] {
+                    margin-left: 300px;
+                    width: calc(100% - 300px);
+                }
+
+                [data-testid="stMainBlockContainer"] {
+                    max-width: 100%;
+                }
             }
 
             @media (max-width: 520px) {
@@ -543,6 +735,15 @@ def apply_terminal_theme() -> None:
                 .nova-signal,
                 [data-testid="stMetric"] {
                     padding: 12px;
+                }
+
+                .dc-metric-card {
+                    min-height: 68px;
+                    padding: 10px 12px;
+                }
+
+                .yeb-journal-grid {
+                    grid-template-columns: 1fr;
                 }
 
                 .nova-card-title {

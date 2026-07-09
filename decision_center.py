@@ -55,6 +55,12 @@ def _component_css() -> str:
             width: 100%;
             min-width: 0;
         }}
+        .mini-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            width: 100%;
+        }}
         .card, .signal {{
             width: 100%;
             min-width: 0;
@@ -133,6 +139,11 @@ def _component_css() -> str:
             }}
             .note {{
                 font-size: 12.5px;
+            }}
+        }}
+        @media (max-width: 720px) {{
+            .mini-grid {{
+                grid-template-columns: 1fr;
             }}
         }}
     </style>
@@ -239,77 +250,23 @@ def _mini_card(label: str, value: str, extra_class: str = "") -> str:
     """
 
 
-def _metric_card(label: str, value: str) -> str:
-    return f"""
-    <div class="dc-metric-card">
-        <div class="label">{escape(label)}</div>
-        <div class="value">{escape(value)}</div>
-    </div>
-    """
-
-
-def _render_metric_grid(cards: str) -> None:
-    tokens = _tokens()
+def _render_metric_card(label: str, value: str) -> None:
     st.markdown(
         f"""
-        <style>
-            .dc-metric-grid {{
-                display: grid;
-                grid-template-columns: repeat(5, minmax(0, 1fr));
-                gap: 10px;
-                width: 100%;
-                min-width: 0;
-                margin: 0.65rem 0 0.35rem;
-            }}
-            .dc-metric-card {{
-                min-width: 0;
-                min-height: 104px;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                border: 1px solid {tokens["border"]};
-                border-radius: 8px;
-                padding: 14px;
-                background: linear-gradient(180deg, {tokens["panel"]}, {tokens["panel_2"]});
-                box-shadow: 0 12px 28px {tokens["shadow"]}, inset 0 1px 0 rgba(255,255,255,0.06);
-                overflow-wrap: anywhere;
-                word-break: break-word;
-            }}
-            .dc-metric-card .label {{
-                color: {tokens["muted"]};
-                font-size: 11px;
-                line-height: 1.25;
-                letter-spacing: 0.06em;
-                text-transform: uppercase;
-                overflow-wrap: anywhere;
-            }}
-            .dc-metric-card .value {{
-                color: {tokens["text"]};
-                margin-top: 7px;
-                font-size: clamp(18px, 2vw, 26px);
-                line-height: 1.18;
-                font-weight: 820;
-                overflow-wrap: anywhere;
-            }}
-            @media (max-width: 520px) {{
-                .dc-metric-grid {{
-                    grid-template-columns: 1fr;
-                }}
-                .dc-metric-card {{
-                    min-height: 82px;
-                    padding: 12px;
-                }}
-            }}
-            @media (min-width: 521px) and (max-width: 980px) {{
-                .dc-metric-grid {{
-                    grid-template-columns: repeat(2, minmax(0, 1fr));
-                }}
-            }}
-        </style>
-        <div class="dc-metric-grid">{cards}</div>
+        <div class="nova-card dc-metric-card">
+            <div class="nova-card-title">{escape(label)}</div>
+            <div class="nova-card-value">{escape(value)}</div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_metric_grid(metrics: list[tuple[str, str]]) -> None:
+    columns = st.columns(len(metrics))
+    for column, (label, value) in zip(columns, metrics):
+        with column:
+            _render_metric_card(label, value)
 
 
 def render_premium_decision_center(
@@ -366,6 +323,22 @@ def render_premium_decision_center(
     </div>
     """
 
+    compact_center_html = f"""
+    <div class="stack">
+        <div class="{component_class}">
+            <div class="label">NOVA AI DECISION CENTER</div>
+            <div class="value">{escape(title)}</div>
+            <div class="note">
+                İşlem Kalitesi: {escape(str(decision["quality"]))}<br>
+                İşlem Vadesi: {escape(str(decision["horizon"]))}<br>
+                Beklenen Getiri: %{escape(str(decision["expected_return"]))}<br>
+                Risk / Getiri: {escape(str(decision["risk_reward"]))}
+            </div>
+            <div class="note">{escape(ai_comment(decision, scores))}</div>
+        </div>
+    </div>
+    """
+
     if show_diagnostics:
         left_col, center_col, right_col = st.columns([0.7, 1.05, 1.35])
         with left_col:
@@ -376,22 +349,21 @@ def render_premium_decision_center(
             st.plotly_chart(confidence_gauge(int(decision["confidence"]), theme_mode), use_container_width=True)
             render_progress_bars(scores)
     else:
-        left_col, center_col = st.columns([0.82, 1.55])
+        left_col, center_col = st.columns([1.05, 1.25])
         with left_col:
-            _render_html(f'<div class="stack">{mini_cards}</div>', height=430)
+            _render_html(f'<div class="mini-grid">{mini_cards}</div>', height=245)
         with center_col:
-            _render_html(center_html, height=430)
+            _render_html(compact_center_html, height=245)
 
-    metric_cards = "".join(
+    _render_metric_grid(
         [
-            _metric_card("Beklenen Getiri", f"%{decision['expected_return']}"),
-            _metric_card("Stop Loss", format_number(float(decision["stop_loss"]))),
-            _metric_card("İlk Hedef", format_number(float(decision["first_target"]))),
-            _metric_card("İkinci Hedef", format_number(float(decision["second_target"]))),
-            _metric_card("Risk / Getiri", str(decision["risk_reward"])),
+            ("Beklenen Getiri", f"%{decision['expected_return']}"),
+            ("Stop Loss", format_number(float(decision["stop_loss"]))),
+            ("İlk Hedef", format_number(float(decision["first_target"]))),
+            ("İkinci Hedef", format_number(float(decision["second_target"]))),
+            ("Risk / Getiri", str(decision["risk_reward"])),
         ]
     )
-    _render_metric_grid(metric_cards)
 
     if show_diagnostics:
         st.plotly_chart(radar_chart(scores, theme_mode), use_container_width=True)

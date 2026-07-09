@@ -28,8 +28,9 @@ def normalize_username(username: str) -> str:
 
 def authenticate(username: str, password: str) -> dict[str, Any] | None:
     normalized = normalize_username(username)
+    clean_password = str(password).strip()
     user = USERS.get(normalized)
-    if not user or password != user["password"]:
+    if not user or clean_password != user["password"]:
         return None
     return {"username": normalized, "is_pro": bool(user.get("is_pro", False))}
 
@@ -83,4 +84,3 @@ def load_closed_trades(username: str) -> list[dict[str, Any]]:
 
 def save_closed_trades(username: str, trades: list[dict[str, Any]]) -> None:
     save_user_list(username, "closed_trades.json", trades)
-

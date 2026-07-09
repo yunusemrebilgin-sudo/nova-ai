@@ -232,7 +232,9 @@ def render_sidebar() -> str:
             """,
             unsafe_allow_html=True,
         )
-        page = st.radio("Menü", PAGES, label_visibility="collapsed")
+        if "selected_page" not in st.session_state:
+            st.session_state.selected_page = PUBLIC_DASHBOARD_PAGE
+        page = st.radio("Menü", PAGES, label_visibility="collapsed", key="selected_page")
         st.markdown('<div class="nova-sidebar-line"></div>', unsafe_allow_html=True)
         if is_authenticated():
             st.caption(f"Oturum: {st.session_state.auth_user}")
@@ -693,6 +695,63 @@ def horizon_score(base_score: int, latest: pd.Series, horizon: str) -> int:
     return clamp_percent(value)
 
 
+def follow_window_visual(
+    horizon: str,
+    score: int,
+    confidence: int,
+    expected_return: float,
+    sell_probability: int,
+    latest: pd.Series,
+) -> tuple[int, int]:
+    horizon_anchor = {
+        "Günlük işlem": 18,
+        "Kısa vade": 34,
+        "Orta vade": 52,
+        "Uzun vade": 68,
+    }.get(horizon, 45)
+    momentum = safe_float(latest.get("MOMENTUM10"))
+    volatility = safe_float(latest.get("VOLATILITY20"))
+    trend_bonus = 8 if latest["EMA20"] > latest["EMA50"] and latest["Close"] > latest["EMA20"] else -6
+    momentum_shift = max(-10, min(10, momentum * 1.6))
+    return_shift = max(-6, min(8, (expected_return - 5) * 1.2))
+    risk_shift = -max(-6, min(10, (sell_probability - 45) * 0.25))
+    score_shift = max(-7, min(7, (score - 60) * 0.16))
+    center = horizon_anchor + trend_bonus + momentum_shift + return_shift + risk_shift + score_shift
+    uncertainty = (100 - confidence) * 0.18 + max(0, volatility - 2.5) * 4 + max(0, sell_probability - 50) * 0.16
+    width = max(12, min(36, 12 + uncertainty))
+    start = int(max(2, min(86, center - width / 2)))
+    width = int(min(width, 96 - start))
+    return start, max(10, width)
+
+
+def holding_period_to_day_range(text: str) -> tuple[int, int]:
+    normalized = str(text).lower()
+    numbers = [int(match) for match in re.findall(r"\d+", normalized)]
+    if not numbers:
+        return 1, 1
+
+    start_day = min(numbers)
+    end_day = max(numbers)
+    if "ay" in normalized:
+        start_day *= 30
+        end_day *= 30
+    return max(1, start_day), max(1, end_day)
+
+
+def follow_window_day_range(holding_period: str, start_pct: int, width_pct: int) -> tuple[int, int]:
+    min_day, max_day = holding_period_to_day_range(holding_period)
+    if max_day <= min_day:
+        return min_day, max_day
+
+    end_pct = min(100, start_pct + width_pct)
+    day_span = max_day - min_day
+    start_day = round(min_day + (day_span * (start_pct / 100)))
+    end_day = round(min_day + (day_span * (end_pct / 100)))
+    start_day = max(min_day, min(start_day, max_day))
+    end_day = max(start_day, min(end_day, max_day))
+    return start_day, end_day
+
+
 def support_resistance(data: pd.DataFrame) -> tuple[float, float]:
     recent_data = data.tail(20)
     return float(recent_data["Low"].min()), float(recent_data["High"].max())
@@ -950,8 +1009,8 @@ def create_score_gauge(score: int, theme_mode: str = "dark") -> go.Figure:
         )
     )
     fig.update_layout(
-        height=260,
-        margin={"l": 12, "r": 12, "t": 24, "b": 6},
+        height=220,
+        margin={"l": 10, "r": 10, "t": 18, "b": 4},
         paper_bgcolor=tokens["plot_bg"],
         plot_bgcolor=tokens["plot_bg"],
         font={"color": tokens["text"]},
@@ -1058,6 +1117,14 @@ def build_trade_horizon_table(
         signal = trade_signal(score, latest)
         expected_return = expected_return_potential(latest, resistance_level, horizon)
         sell_probability = sell_signal_probability(latest, score, horizon)
+        follow_start, follow_width = follow_window_visual(
+            horizon,
+            score,
+            confidence,
+            expected_return,
+            sell_probability,
+            latest,
+        )
         main_decision = main_decision_label(signal, confidence, sell_probability)
         rows.append(
             {
@@ -1069,6 +1136,8 @@ def build_trade_horizon_table(
                 "Sat Sinyali Yakma Riski %": sell_probability,
                 "Beklenen Taşıma Süresi": expected_holding_period(latest, horizon),
                 "Beklenen Getiri %": expected_return,
+                "Takip Penceresi Başlangıç %": follow_start,
+                "Takip Penceresi Genişlik %": follow_width,
                 "Ana Karar": main_decision,
                 "Trend": trend_text(latest),
                 "Risk": risk_text(latest),
@@ -1175,31 +1244,67 @@ def create_radar_chart(scores: dict[str, int]) -> go.Figure:
 
 def render_trade_horizon_cards(trade_table: pd.DataFrame) -> None:
     card_meta = {
-        "Günlük işlem": ("⚡ Günlük Trade", "1-5 işlem günü"),
-        "Kısa vade": ("📈 Kısa Vade", "1-4 hafta"),
-        "Orta vade": ("📊 Orta Vade", "1-6 ay"),
-        "Uzun vade": ("🏦 Uzun Vade", "6-24 ay"),
+        "Günlük işlem": "⚡ Günlük Trade",
+        "Kısa vade": "📈 Kısa Vade",
+        "Orta vade": "📊 Orta Vade",
+        "Uzun vade": "🏦 Uzun Vade",
     }
     columns = st.columns(4)
     for column, (_, row) in zip(columns, trade_table.iterrows()):
-        title, target = card_meta.get(row["Vade"], (row["Vade"], "-"))
+        title = card_meta.get(row["Vade"], row["Vade"])
+        window_start = int(row.get("Takip Penceresi Başlangıç %", 40))
+        window_width = int(row.get("Takip Penceresi Genişlik %", 20))
         with column:
             st.markdown(
                 f"""
-                <div class="nova-card">
+                <div class="nova-card nova-horizon-card">
                     <div class="nova-card-title">{title}</div>
-                    <div class="nova-card-note">Hedef: {target}</div>
-                    <div class="nova-card-note">Nova Skoru: {row["Nova Skoru"]}/100</div>
-                    <div class="nova-card-note">Nova AI Güven Endeksi: %{row["Nova AI Güven Endeksi"]}</div>
-                    <div class="nova-card-note">Alım Uygunluğu: %{row["Alım Uygunluğu %"]}</div>
-                    <div class="nova-card-note">Sat Riski: %{row["Sat Sinyali Yakma Riski %"]}</div>
-                    <div class="nova-card-note">Taşıma Süresi: {row["Beklenen Taşıma Süresi"]}</div>
+                    <div class="nova-card-note">AI Güven Endeksi: %{row["Nova AI Güven Endeksi"]}</div>
                     <div class="nova-card-note">Beklenen Getiri: %{row["Beklenen Getiri %"]}</div>
-                    <div class="nova-card-value">{row["Ana Karar"]}</div>
+                    <div class="nova-card-note">Taşıma Süresi: {row["Beklenen Taşıma Süresi"]}</div>
+                    <div class="nova-follow-label">Takip Penceresi</div>
+                    <div class="nova-follow-track">
+                        <div class="nova-follow-window" style="left:{window_start}%; width:{window_width}%"></div>
+                    </div>
+                    <div class="nova-card-note">Sat Riski: %{row["Sat Sinyali Yakma Riski %"]}</div>
+                    <div class="nova-horizon-decision">{row["Ana Karar"]}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
+
+
+def render_pro_follow_window_detail(selected_horizon: str, selected_trade_row: pd.Series) -> None:
+    if not st.session_state.get("yeb_pro_active", False):
+        return
+
+    holding_period = str(selected_trade_row["Beklenen Taşıma Süresi"])
+    window_start = int(selected_trade_row.get("Takip Penceresi Başlangıç %", 40))
+    window_width = int(selected_trade_row.get("Takip Penceresi Genişlik %", 20))
+    start_day, end_day = follow_window_day_range(holding_period, window_start, window_width)
+    if start_day == end_day:
+        range_text = f"{start_day}. işlem günü"
+    else:
+        range_text = f"{start_day}-{end_day}. işlem günü"
+
+    st.markdown(
+        f"""
+        <div class="nova-card nova-pro-follow-detail">
+            <div>
+                <div class="nova-card-title">YEB PRO · AI Takip Detayı</div>
+                <div class="nova-card-note">
+                    Seçili vade: {escape(selected_horizon)} · Beklenen taşıma süresi: {escape(holding_period)}
+                </div>
+            </div>
+            <div class="nova-pro-follow-value">{escape(range_text)}</div>
+            <div class="nova-card-note">
+                AI takip penceresi, mevcut skor ve risk değerlerine göre bu vade içinde en kritik izleme bölgesini özetler.
+                Net tarih veya kesin al/sat günü değildir.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_main_trade_decision_card(
@@ -1250,6 +1355,19 @@ def render_decision_text_box(title: str, body: str) -> None:
     )
 
 
+def render_ai_summary_card(body: str) -> None:
+    safe_body = escape(body).replace("\n", "<br>")
+    st.markdown(
+        f"""
+        <div class="nova-card nova-ai-summary-card">
+            <div class="nova-card-title">AI ANALİZ ÖZETİ</div>
+            <div class="nova-card-note">{safe_body}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_today_decision_box(
     signal_text: str,
     signal_detail: str,
@@ -1290,7 +1408,8 @@ def load_market_data(ticker: str, period_label: str) -> pd.DataFrame:
             progress=False,
             auto_adjust=True,
             multi_level_index=False,
-            timeout=8,
+            threads=False,
+            timeout=5,
         )
     except Exception:
         st.error(
@@ -1364,7 +1483,8 @@ def scan_bist_market(tickers: tuple[str, ...]) -> tuple[pd.DataFrame, list[str]]
                 progress=False,
                 auto_adjust=True,
                 multi_level_index=False,
-                timeout=15,
+                threads=False,
+                timeout=5,
             )
             row = prepare_scanner_row(ticker, raw_data)
         except Exception:
@@ -1750,6 +1870,7 @@ def render_market_scanner_page() -> None:
     default_selection = [symbol for symbol in default_symbols if symbol in scanner_options]
     if not default_selection and scanner_options:
         default_selection = scanner_options[:50]
+    scanner_symbol_labels = build_symbol_labels(bist_symbols)
 
     picker_col, action_col = st.columns([3.4, 0.95])
     with picker_col:
@@ -1757,7 +1878,7 @@ def render_market_scanner_page() -> None:
             "Taranacak hisseler",
             scanner_options,
             default=default_selection,
-            format_func=lambda symbol: symbol_label(symbol, bist_symbols),
+            format_func=lambda symbol: scanner_symbol_labels.get(symbol, symbol),
         )
     with action_col:
         st.markdown('<div class="nova-button-spacer"></div>', unsafe_allow_html=True)
@@ -1990,6 +2111,7 @@ def render_dashboard_page() -> None:
     quick_options = filtered_symbols["symbol"].tolist()
     if st.session_state.quick_ticker not in quick_options:
         st.session_state.quick_ticker = quick_options[0]
+    dashboard_symbol_labels = build_symbol_labels(bist_symbols)
 
     with control_col_1:
         st.selectbox(
@@ -1997,7 +2119,7 @@ def render_dashboard_page() -> None:
             quick_options,
             key="quick_ticker",
             on_change=sync_manual_ticker,
-            format_func=lambda symbol: symbol_label(symbol, bist_symbols),
+            format_func=lambda symbol: dashboard_symbol_labels.get(symbol, symbol),
         )
 
     with control_col_2:
@@ -2026,6 +2148,7 @@ def render_dashboard_page() -> None:
     )
 
     selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
+    render_pro_follow_window_detail(selected_horizon, selected_trade_row)
     selected_signal = str(selected_trade_row["Sinyal"])
     selected_score = int(selected_trade_row["Nova Skoru"])
     selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
@@ -2078,17 +2201,15 @@ def render_dashboard_page() -> None:
         render_value_card("Beklenen Taşıma Süresi", str(selected_trade_row["Beklenen Taşıma Süresi"]))
 
     st.markdown("### Gauge + Teknik Barlar")
-    gauge_col, bars_col = st.columns([0.95, 1.45])
+    gauge_col, bars_col = st.columns([0.75, 1.65])
     with gauge_col:
         st.plotly_chart(create_score_gauge(general_score, dashboard_theme_mode), use_container_width=True)
     with bars_col:
         nova_decision.render_progress_bars(radar_scores_v12)
 
-    st.markdown("### Radar + AI Analiz Özeti")
-    radar_col, summary_col = st.columns([1.05, 1.15])
-    with radar_col:
-        st.plotly_chart(nova_decision.radar_chart(radar_scores_v12, dashboard_theme_mode), use_container_width=True)
-    with summary_col:
+    st.markdown("### AI Analiz Özeti")
+    decision_col, analysis_col = st.columns([0.85, 1.25])
+    with decision_col:
         render_today_decision_box(
             signal_text,
             signal_detail,
@@ -2097,7 +2218,8 @@ def render_dashboard_page() -> None:
             support_level,
             resistance_level,
         )
-        st.info(build_analysis(latest, general_score, score_reasons, signal_text))
+    with analysis_col:
+        render_ai_summary_card(build_analysis(latest, general_score, score_reasons, signal_text))
 
     st.markdown("### Fiyat Grafiği")
     st.plotly_chart(
@@ -2166,14 +2288,21 @@ def render_login_page() -> bool:
         unsafe_allow_html=True,
     )
     with st.form("smart_scanner_login_form"):
-        username = st.text_input("Kullanıcı Adı")
-        password = st.text_input("Şifre", type="password")
-        submitted = st.form_submit_button("Giriş Yap", type="primary")
+        username = st.text_input("Kullanıcı Adı", key="login_username")
+        password = st.text_input("Şifre", type="password", key="login_password")
+        submitted = st.form_submit_button("Giriş Yap")
 
     if not submitted:
         return False
 
-    user = user_store.authenticate(username, password)
+    username_value = str(st.session_state.get("login_username", username)).strip()
+    password_value = str(st.session_state.get("login_password", password)).strip()
+    user = user_store.authenticate(username_value, password_value)
+    if not user:
+        normalized_username = user_store.normalize_username(username_value)
+        known_user = user_store.USERS.get(normalized_username)
+        if known_user and password_value == known_user["password"]:
+            user = {"username": normalized_username, "is_pro": bool(known_user.get("is_pro", False))}
     if user:
         st.session_state.is_authenticated = True
         st.session_state.auth_user = user["username"]
@@ -2181,6 +2310,7 @@ def render_login_page() -> bool:
         st.session_state.yeb_data_user = ""
         load_current_user_pro_data()
         st.success("Giriş başarılı.")
+        st.rerun()
         return True
 
     st.error("Kullanıcı adı veya şifre hatalı.")
@@ -2206,14 +2336,7 @@ def render_pro_locked_page() -> None:
 
 
 def holding_period_to_days(text: str) -> int:
-    normalized = str(text).lower()
-    numbers = [int(match) for match in re.findall(r"\d+", normalized)]
-    if not numbers:
-        return 1
-    value = max(numbers)
-    if "ay" in normalized:
-        return value * 30
-    return value
+    return holding_period_to_day_range(text)[1]
 
 
 def build_buy_snapshot(symbol: str, quantity: int) -> dict[str, object]:
@@ -2337,14 +2460,16 @@ def render_pro_buy_page() -> None:
     load_current_user_pro_data()
     st.markdown("### Aldım")
     bist_symbols = get_bist_symbols_or_stop()
+    symbol_labels = build_symbol_labels(bist_symbols)
     symbol = st.selectbox(
         "Hisse",
         bist_symbols["symbol"].tolist(),
-        format_func=lambda value: symbol_label(value, bist_symbols),
+        format_func=lambda value: symbol_labels.get(value, value),
     )
     quantity = st.number_input("Lot / adet", min_value=1, value=1, step=1)
     if st.button("ALDIM", type="primary"):
-        position = build_buy_snapshot(symbol, int(quantity))
+        with st.spinner(f"{symbol} için güncel analiz alınıyor..."):
+            position = build_buy_snapshot(symbol, int(quantity))
         st.session_state.yeb_open_positions.append(position)
         save_current_user_pro_data()
         st.success(f"{symbol} pozisyonu kaydedildi.")
@@ -2706,7 +2831,34 @@ def render_trade_journal_page() -> None:
     if not closed_trades:
         st.info("Kapalı işlem yok.")
         return
-    st.dataframe(pd.DataFrame(closed_trades), use_container_width=True)
+
+    for trade in reversed(closed_trades):
+        pnl = float(trade.get("Kâr/Zarar %", 0))
+        pnl_class = "positive" if pnl >= 0 else "negative"
+        st.markdown(
+            f"""
+            <div class="nova-card yeb-journal-card">
+                <div class="yeb-journal-top">
+                    <div>
+                        <div class="yeb-journal-symbol">{escape(str(trade.get("Hisse", "-")))}</div>
+                        <div class="nova-card-note">
+                            Alış: {escape(str(trade.get("Alış Tarihi", "-")))} · Satış: {escape(str(trade.get("Satış Tarihi", "-")))}
+                        </div>
+                    </div>
+                    <div class="yeb-journal-pnl {pnl_class}">%{format_number(pnl)}</div>
+                </div>
+                <div class="yeb-journal-grid">
+                    <div><span>Alış Fiyatı</span><strong>{format_number(float(trade.get("Alış Fiyatı", 0)))}</strong></div>
+                    <div><span>Satış Fiyatı</span><strong>{format_number(float(trade.get("Satış Fiyatı", 0)))}</strong></div>
+                    <div><span>Taşınan Gün</span><strong>{escape(str(trade.get("Kaç gün taşındı", 0)))}</strong></div>
+                    <div><span>Hedef 1</span><strong>{escape(str(trade.get("Hedef 1 görüldü mü", "-")))}</strong></div>
+                    <div><span>Hedef 2</span><strong>{escape(str(trade.get("Hedef 2 görüldü mü", "-")))}</strong></div>
+                    <div><span>Stop</span><strong>{escape(str(trade.get("Stop çalıştı mı", "-")))}</strong></div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     st.caption(DISCLAIMER)
 
 

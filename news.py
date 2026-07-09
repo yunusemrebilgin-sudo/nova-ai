@@ -7,6 +7,9 @@ import streamlit as st
 import yfinance as yf
 
 
+LIVE_NEWS_IMPACT_ENABLED = False
+
+
 POSITIVE_NEWS_KEYWORDS = (
     "anlaşma",
     "artış",
@@ -73,6 +76,9 @@ def _headline_text(item: dict[str, Any]) -> str:
 
 
 def news_impact_percent(symbol: str, company_name: str = "") -> float:
+    if not LIVE_NEWS_IMPACT_ENABLED:
+        return 0.0
+
     news_items = fetch_symbol_news(symbol)
     if not news_items:
         return 0.0
@@ -102,4 +108,3 @@ def news_impact_percent(symbol: str, company_name: str = "") -> float:
     if raw_impact >= 0:
         return round(min(3.0, raw_impact * 3.0), 1)
     return round(max(-4.0, raw_impact * 4.0), 1)
-

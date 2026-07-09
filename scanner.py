@@ -63,7 +63,8 @@ def download_price_data(symbol: str) -> pd.DataFrame:
         progress=False,
         auto_adjust=True,
         multi_level_index=False,
-        timeout=8,
+        threads=False,
+        timeout=5,
     )
 
 
