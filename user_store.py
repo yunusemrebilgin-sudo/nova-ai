@@ -84,3 +84,12 @@ def load_closed_trades(username: str) -> list[dict[str, Any]]:
 
 def save_closed_trades(username: str, trades: list[dict[str, Any]]) -> None:
     save_user_list(username, "closed_trades.json", trades)
+
+
+def load_ai_watchlist(username: str) -> list[dict[str, Any]]:
+    """Return the private Pro watchlist belonging to one user."""
+    return load_user_list(username, "ai_watchlist.json")
+
+
+def save_ai_watchlist(username: str, watchlist: list[dict[str, Any]]) -> None:
+    save_user_list(username, "ai_watchlist.json", watchlist)

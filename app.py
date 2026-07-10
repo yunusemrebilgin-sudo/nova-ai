@@ -1,5 +1,6 @@
 import pandas as pd
 import plotly.graph_objects as go
+import json
 import re
 import streamlit as st
 import streamlit.components.v1 as components
@@ -101,10 +102,6 @@ def stop_app() -> None:
     raise SystemExit
 
 
-def sync_manual_ticker() -> None:
-    st.session_state.manual_ticker = st.session_state.quick_ticker
-
-
 def now_istanbul() -> datetime:
     return datetime.now(app_timezone())
 
@@ -126,6 +123,8 @@ def init_access_state() -> None:
         st.session_state.yeb_open_positions = []
     if "yeb_closed_trades" not in st.session_state:
         st.session_state.yeb_closed_trades = []
+    if "yeb_ai_watchlist" not in st.session_state:
+        st.session_state.yeb_ai_watchlist = []
     if "yeb_pro_module" not in st.session_state:
         st.session_state.yeb_pro_module = DEFAULT_PRO_MODULE
 
@@ -148,6 +147,7 @@ def load_current_user_pro_data() -> None:
         return
     st.session_state.yeb_open_positions = user_store.load_open_positions(username)
     st.session_state.yeb_closed_trades = user_store.load_closed_trades(username)
+    st.session_state.yeb_ai_watchlist = user_store.load_ai_watchlist(username)
     st.session_state.yeb_data_user = username
 
 
@@ -157,6 +157,7 @@ def save_current_user_pro_data() -> None:
         return
     user_store.save_open_positions(username, st.session_state.get("yeb_open_positions", []))
     user_store.save_closed_trades(username, st.session_state.get("yeb_closed_trades", []))
+    user_store.save_ai_watchlist(username, st.session_state.get("yeb_ai_watchlist", []))
     st.session_state.yeb_data_user = username
 
 
@@ -167,6 +168,7 @@ def logout_current_user() -> None:
     st.session_state.yeb_data_user = ""
     st.session_state.yeb_open_positions = []
     st.session_state.yeb_closed_trades = []
+    st.session_state.yeb_ai_watchlist = []
 
 
 @st.cache_data(show_spinner=False)
@@ -220,39 +222,55 @@ def symbol_label(symbol: str, symbols: pd.DataFrame) -> str:
     return build_symbol_labels(symbols).get(symbol, symbol)
 
 
-def render_sidebar() -> str:
-    with st.sidebar:
+def render_app_header() -> None:
+    spacer_col, brand_col, menu_col = st.columns([0.28, 1.0, 0.28])
+    with spacer_col:
+        st.empty()
+    with brand_col:
+        if st.button("NOVA AI", key="brand_refresh", use_container_width=True):
+            load_market_data.clear()
+            load_one_month_close_data.clear()
+            st.rerun()
         st.markdown(
-            """
-            <div class="nova-logo">
-                <div class="nova-logo-main">NOVA AI</div>
-                <div class="nova-logo-sub">AI Market Intelligence</div>
-            </div>
-            <div class="nova-sidebar-line"></div>
-            """,
+            '<div class="nova-header-brand-marker">AI MARKET INTELLIGENCE</div>',
             unsafe_allow_html=True,
         )
-        if "selected_page" not in st.session_state:
-            st.session_state.selected_page = PUBLIC_DASHBOARD_PAGE
-        page = st.radio("Menü", PAGES, label_visibility="collapsed", key="selected_page")
-        st.markdown('<div class="nova-sidebar-line"></div>', unsafe_allow_html=True)
-        if is_authenticated():
-            st.caption(f"Oturum: {st.session_state.auth_user}")
-            if st.button("Çıkış Yap"):
+    with menu_col:
+        menu_label = f"{current_auth_user()} · PRO" if has_pro_access() else "Hesap"
+        with st.popover(menu_label, use_container_width=True, key="account_menu"):
+            if is_authenticated():
+                watch_count = len(st.session_state.get("yeb_ai_watchlist", []))
+                st.markdown(f"**{escape(current_auth_user())}**")
+                st.caption(f"YEB PRO · AI Takip: {watch_count}")
+            else:
+                st.markdown("**Misafir oturumu**")
+                st.caption("Smart Scanner ve Pro için giriş gerekir.")
+            st.toggle(
+                "Açık tema",
+                key="theme_toggle",
+                on_change=set_theme_from_toggle,
+            )
+            if is_authenticated() and st.button("Çıkış", key="header_logout", use_container_width=True):
                 logout_current_user()
                 st.rerun()
-        else:
-            st.caption("Smart Scanner için giriş gerekir.")
-        st.markdown('<div class="nova-sidebar-line"></div>', unsafe_allow_html=True)
-        st.toggle(
-            "☀️ Light Mode",
-            key="theme_toggle",
-            on_change=set_theme_from_toggle,
-        )
-        st.caption("🌙 Dark Mode / ☀️ Light Mode")
-        st.markdown('<div class="nova-sidebar-line"></div>', unsafe_allow_html=True)
-        st.caption(DISCLAIMER)
-    return page
+
+
+def render_top_navigation() -> str:
+    if "selected_page" not in st.session_state:
+        st.session_state.selected_page = PUBLIC_DASHBOARD_PAGE
+    navigation_labels = {
+        PUBLIC_DASHBOARD_PAGE: "Dashboard",
+        SMART_SCANNER_PAGE: "Smart Scanner",
+        YEB_PRO_PAGE: "YEB PRO",
+    }
+    return st.radio(
+        "Ana menü",
+        PAGES,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="selected_page",
+        format_func=lambda page: navigation_labels.get(page, page),
+    )
 
 
 def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
@@ -1307,6 +1325,320 @@ def render_pro_follow_window_detail(selected_horizon: str, selected_trade_row: p
     )
 
 
+def business_days_since(added_on: str) -> int:
+    """Approximate elapsed trading days without treating calendar days as sessions."""
+    try:
+        start = datetime.strptime(added_on, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return 0
+    elapsed = max(0, (now_istanbul().date() - start).days)
+    return max(0, round(elapsed * 5 / 7))
+
+
+def buy_condition_snapshot(latest: pd.Series, horizon: str) -> dict[str, object]:
+    """Evaluate the same rule set used by both live monitoring and historical validation."""
+    score, _ = calculate_general_score(latest)
+    confidence = nova_confidence_index(latest)
+    suitability = buy_suitability_percent(score, latest, horizon)
+    sell_risk = sell_risk_percent(score, latest, horizon)
+    readiness = clamp_percent((suitability * 0.6) + (confidence * 0.3) - (sell_risk * 0.2))
+    signal = trade_signal(score, latest)
+    buy_conditions_met = (
+        signal == "ALIM İÇİN İZLENEBİLİR"
+        and readiness >= 72
+        and suitability >= 75
+        and confidence >= 70
+        and sell_risk < 45
+        and latest["Close"] > latest["EMA20"] > latest["EMA50"]
+        and latest["MACD"] > 0
+        and 40 <= latest["RSI14"] <= 65
+    )
+    return {
+        "score": score,
+        "confidence": confidence,
+        "suitability": suitability,
+        "sell_risk": sell_risk,
+        "readiness": readiness,
+        "signal": signal,
+        "buy_conditions_met": buy_conditions_met,
+    }
+
+
+def watchlist_timing(latest: pd.Series, horizon: str) -> dict[str, object]:
+    """Create a dynamic monitoring window, not a buy recommendation."""
+    snapshot = buy_condition_snapshot(latest, horizon)
+    readiness = int(snapshot["readiness"])
+    sell_risk = int(snapshot["sell_risk"])
+    signal = str(snapshot["signal"])
+    buy_conditions_met = bool(snapshot["buy_conditions_met"])
+    holding_period = expected_holding_period(latest, horizon)
+    start_day, end_day = follow_window_day_range(holding_period, 40, 20)
+
+    if readiness >= 72:
+        return {
+            "readiness": readiness,
+            "days_until": 0,
+            "critical_day": start_day,
+            "window": f"{start_day}-{end_day}. işlem günü",
+            "status": "Bugün yeniden değerlendirilebilir",
+            "buy_control": "ALIM KOŞULLARI SAĞLANDI" if buy_conditions_met else "Bugün teyit bekle",
+            "buy_conditions_met": buy_conditions_met,
+            "sell_control": "Hedef / stop izle" if sell_risk < 65 else "Risk / stop kontrolü",
+            "signal": signal,
+        }
+
+    days_until = max(1, min(15, round((72 - readiness) / 5)))
+    return {
+        "readiness": readiness,
+        "days_until": days_until,
+        "critical_day": start_day + days_until,
+        "window": f"{start_day}-{end_day}. işlem günü",
+        "status": f"Tahmini {days_until} işlem günü sonra kontrol",
+        "buy_control": f"{days_until} iş. günü sonra",
+        "buy_conditions_met": False,
+        "sell_control": "Risk teyidi bekle" if sell_risk < 65 else "Bugün risk kontrolü",
+        "signal": signal,
+    }
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_one_month_close_data(ticker: str) -> pd.DataFrame:
+    for period in ("1mo", "3mo", "6mo"):
+        try:
+            fresh_data = yf.download(
+                ticker,
+                period=period,
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+                multi_level_index=False,
+                threads=False,
+                timeout=5,
+            )
+        except Exception:
+            continue
+        if not fresh_data.empty and "Close" in fresh_data.columns:
+            return fresh_data[["Close"]].dropna()
+    return pd.DataFrame()
+
+
+def render_one_month_trade_trends(data: pd.DataFrame, ticker: str) -> None:
+    """Render the latest 30 calendar days as daily positive/negative return bars."""
+    fresh_data = load_one_month_close_data(ticker)
+    using_cached_fallback = fresh_data.empty
+    trend_data = fresh_data.copy() if not fresh_data.empty else data[["Close"]].copy()
+    if getattr(trend_data.index, "tz", None) is not None:
+        trend_data.index = trend_data.index.tz_convert(APP_TIMEZONE_NAME).tz_localize(None)
+    trend_data.index = pd.DatetimeIndex(trend_data.index).normalize()
+    trend_data["change_pct"] = trend_data["Close"].pct_change() * 100
+    viewed_day = pd.Timestamp(now_istanbul().date())
+    cutoff = viewed_day - pd.Timedelta(days=29)
+    trend_data = trend_data.loc[
+        (trend_data.index >= cutoff) & (trend_data.index <= viewed_day)
+    ].dropna(subset=["change_pct"])
+    if trend_data.empty:
+        st.info("Son bir aylık işlem trendi için yeterli veri bulunamadı.")
+        return
+
+    tokens = theme_tokens()
+    date_keys = trend_data.index.strftime("%Y-%m-%d").tolist()
+    full_dates = trend_data.index.strftime("%d.%m.%Y").tolist()
+    calendar_days = pd.date_range(cutoff, viewed_day, freq="D")
+    calendar_keys = calendar_days.strftime("%Y-%m-%d").tolist()
+    calendar_labels = calendar_days.strftime("%d").tolist()
+    changes = trend_data["change_pct"].tolist()
+    positive = [value if value >= 0 else None for value in changes]
+    negative = [value if value < 0 else None for value in changes]
+
+    figure = go.Figure()
+    figure.add_bar(
+        x=date_keys,
+        y=positive,
+        name="Yükseliş",
+        marker_color="#2dd4a8",
+        customdata=full_dates,
+        hovertemplate="%{customdata}<br>Günlük değişim: %{y:.2f}%<extra></extra>",
+    )
+    figure.add_bar(
+        x=date_keys,
+        y=negative,
+        name="Düşüş",
+        marker_color="#ff7355",
+        customdata=full_dates,
+        hovertemplate="%{customdata}<br>Günlük değişim: %{y:.2f}%<extra></extra>",
+    )
+    figure.update_layout(
+        template=tokens["plot_template"],
+        paper_bgcolor=tokens["plot_bg"],
+        plot_bgcolor=tokens["plot_bg"],
+        font={"color": tokens["text"]},
+        height=390,
+        margin={"l": 24, "r": 16, "t": 24, "b": 42},
+        barmode="relative",
+        bargap=0.28,
+        legend={"orientation": "h", "y": -0.18, "x": 0},
+        xaxis={
+            "title": "Ayın günleri · son 1 ay",
+            "type": "category",
+            "categoryorder": "array",
+            "categoryarray": calendar_keys,
+            "tickmode": "array",
+            "tickvals": calendar_keys,
+            "ticktext": calendar_labels,
+            "showgrid": False,
+            "tickfont": {"size": 10, "color": tokens["muted"]},
+        },
+        yaxis={
+            "title": "Günlük değişim",
+            "ticksuffix": "%",
+            "zeroline": True,
+            "zerolinecolor": tokens["muted"],
+            "gridcolor": tokens["grid"],
+        },
+    )
+    st.markdown("#### İşlem Trendleri · Son 1 Ay")
+    st.plotly_chart(figure, use_container_width=True, key=f"one_month_trade_trends_{ticker}")
+    last_verified_date = trend_data.index.max().strftime("%d.%m.%Y")
+    if using_cached_fallback:
+        st.warning(f"Güncel veri sağlayıcısı yanıt vermedi. Gösterilen son doğrulanmış veri: {last_verified_date}")
+    else:
+        st.caption(f"Son doğrulanmış işlem verisi: {last_verified_date}")
+    st.caption("Yeşil sütunlar günlük fiyat yükselişini, turuncu sütunlar günlük fiyat düşüşünü gösterir. Net alış-satış verisi değildir.")
+
+
+def render_add_to_ai_watchlist(ticker: str, symbols: pd.DataFrame, selected_horizon: str) -> None:
+    if not has_pro_access():
+        return
+
+    load_current_user_pro_data()
+    watchlist = st.session_state.get("yeb_ai_watchlist", [])
+    already_added = any(
+        str(item.get("symbol", "")).upper() == ticker
+        and str(item.get("horizon", "")) == selected_horizon
+        for item in watchlist
+    )
+    button_col, status_col = st.columns([0.34, 0.66])
+    with button_col:
+        if st.button(
+            "+ AI Takip Listeme Ekle",
+            key=f"add_watch_{ticker}_{selected_horizon}",
+            type="primary",
+            use_container_width=True,
+            disabled=already_added,
+        ):
+            labels = build_symbol_labels(symbols)
+            st.session_state.yeb_ai_watchlist.append(
+                {
+                    "symbol": ticker,
+                    "label": labels.get(ticker, ticker),
+                    "horizon": selected_horizon,
+                    "added_on": now_istanbul().date().isoformat(),
+                }
+            )
+            save_current_user_pro_data()
+            st.rerun()
+    with status_col:
+        if already_added:
+            st.success(f"{ticker}, {selected_horizon} vadesiyle AI Takip Listende.")
+        else:
+            st.caption(f"Seçili takip vadesi: {selected_horizon}")
+
+
+def render_pro_ai_watchlist(
+    ticker: str,
+    data: pd.DataFrame,
+    symbols: pd.DataFrame,
+    selected_horizon: str,
+) -> None:
+    if not has_pro_access():
+        return
+
+    load_current_user_pro_data()
+    watchlist = st.session_state.get("yeb_ai_watchlist", [])
+    st.markdown("### YEB PRO · AI Takip Listem")
+    st.caption("Kritik gün barı ve sayaç, her ziyaretinde mevcut teknik durumla yeniden hesaplanır. " + DISCLAIMER)
+    st.info("Kritik gün, takip penceresi ile anlık AI hazırlık skorunu birlikte kullanır; kesin alım tarihi değildir.")
+
+    if not watchlist:
+        st.info("Liste boş. Dashboarddaki bir hisseyi ekleyerek kişisel takip akışını başlatabilirsin.")
+        return
+
+    watch_rows = []
+    for item in list(watchlist):
+        symbol = str(item.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        horizon = str(item.get("horizon", selected_horizon))
+        item_data = data if symbol == ticker else load_market_data(symbol, DEFAULT_PERIOD_LABEL)
+        current = item_data.iloc[-1]
+        timing = watchlist_timing(current, horizon)
+        elapsed_days = business_days_since(str(item.get("added_on", "")))
+        critical_day = max(1, int(timing["critical_day"]))
+        progress = min(100, round((elapsed_days / critical_day) * 100))
+        change_pct = safe_float(current.get("DAILY_CHANGE_PCT", 0))
+        watch_rows.append(
+            {
+                "symbol": symbol,
+                "label": str(item.get("label", symbol)),
+                "horizon": horizon,
+                "price": format_number(safe_float(current.get("Close"))),
+                "change": f"{change_pct:+.2f}%",
+                "change_class": "up" if change_pct >= 0 else "down",
+                "readiness": int(timing["readiness"]),
+                "critical_day": critical_day,
+                "counter": "Bugün" if timing["days_until"] == 0 else f"{timing['days_until']} iş. günü",
+                "status": str(timing["status"]),
+                "status_class": "ready" if timing["days_until"] == 0 else "watch",
+                "progress": progress,
+                "buy_control": str(timing["buy_control"]),
+                "buy_conditions_met": bool(timing["buy_conditions_met"]),
+                "sell_control": str(timing["sell_control"]),
+            }
+        )
+
+    table_rows = []
+    for row in watch_rows:
+        buy_class = "buy-alert" if row["buy_conditions_met"] else ""
+        table_rows.append(
+            f"""<tr>
+              <td><strong>{escape(row['symbol'])}</strong><small>{escape(row['label'].replace(row['symbol'], '').strip(' -') or 'BIST')}</small></td>
+              <td><b>₺{row['price']}</b><small class="{row['change_class']}">{row['change']}</small></td>
+              <td><b>%{row['readiness']}</b><div class="track"><i style="width:{row['readiness']}%"></i></div></td>
+              <td><b class="{buy_class}">{escape(row['buy_control'])}</b><small>Kritik gün: {row['critical_day']}. işlem günü</small></td>
+              <td><b>{escape(row['sell_control'])}</b><small>{escape(row['status'])}</small></td>
+            </tr>"""
+        )
+
+    watch_html = f"""
+    <style>
+      * {{ box-sizing:border-box }} body {{ margin:0; background:transparent; font-family:Inter,Arial,sans-serif; color:#e7eefc }}
+      .table-wrap {{ overflow-x:auto; border:1px solid #20324f; border-radius:12px; background:#0a1426 }} table {{ width:100%; min-width:760px; border-collapse:collapse }} th {{ padding:12px 16px; color:#8096b7; background:#0d1930; border-bottom:1px solid #20324f; text-align:left; font-size:10px; letter-spacing:.8px }} td {{ padding:15px 16px; border-bottom:1px solid #182945; font-size:13px; vertical-align:middle }} tr:last-child td {{ border-bottom:0 }} tr:hover td {{ background:#0e1c34 }} strong {{ color:#f3f7ff; font-size:15px }} b {{ display:block; color:#edf4ff; font-size:13px }} small {{ display:block; margin-top:5px; color:#8da1bf; font-size:11px }} .up {{ color:#2dd4a8 }} .down {{ color:#fb7185 }} .track {{ height:5px; margin-top:8px; overflow:hidden; border-radius:99px; background:#233552; width:100% }} .track i {{ display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#22d3ee,#38bdf8) }} .buy-alert {{ display:inline-block; padding:6px 9px; border-radius:8px; color:#42e8b4; background:rgba(45,212,168,.13); animation:buyPulse 1.25s ease-in-out infinite }} @keyframes buyPulse {{ 0%,100% {{ opacity:1; box-shadow:0 0 0 0 rgba(45,212,168,.35) }} 50% {{ opacity:.42; box-shadow:0 0 0 5px rgba(45,212,168,0) }} }} @media (prefers-reduced-motion:reduce) {{ .buy-alert {{ animation:none }} }}
+    </style><div class="table-wrap"><table><thead><tr><th>HİSSE</th><th>SON / GÜNLÜK</th><th>AI HAZIRLIK</th><th>ALIM KONTROLÜ</th><th>SATIŞ / RİSK KONTROLÜ</th></tr></thead><tbody>{''.join(table_rows)}</tbody></table></div>"""
+    components.html(watch_html, height=max(110, 62 + len(watch_rows) * 76), scrolling=False)
+
+    with st.expander("Takip listesini düzenle"):
+        remove_key = st.selectbox(
+            "Listeden çıkarılacak hisse ve vade",
+            [f"{row['symbol']}::{row['horizon']}" for row in watch_rows],
+            format_func=lambda value: next(
+                f"{row['label']} · {row['horizon']}"
+                for row in watch_rows
+                if f"{row['symbol']}::{row['horizon']}" == value
+            ),
+        )
+        if st.button("Listeden çıkar", key="remove_ai_watchlist"):
+            remove_symbol, remove_horizon = remove_key.split("::", 1)
+            st.session_state.yeb_ai_watchlist = [
+                row for row in st.session_state.yeb_ai_watchlist
+                if not (
+                    str(row.get("symbol", "")).upper() == remove_symbol
+                    and str(row.get("horizon", "")) == remove_horizon
+                )
+            ]
+            save_current_user_pro_data()
+            st.rerun()
+
+
 def render_main_trade_decision_card(
     selected_horizon: str,
     signal: str,
@@ -2087,68 +2419,91 @@ def render_smart_scanner_page() -> None:
 
 
 def render_dashboard_page() -> None:
-    st.title("NOVA AI")
-    st.markdown('<div class="nova-subtitle">Analyze Smarter. Decide Better.</div>', unsafe_allow_html=True)
     dashboard_theme_mode = st.session_state.get("theme_mode", "dark")
     bist_symbols = get_bist_symbols_or_stop()
 
     if "quick_ticker" not in st.session_state:
         st.session_state.quick_ticker = bist_symbols.iloc[0]["symbol"]
-    if "manual_ticker" not in st.session_state:
-        st.session_state.manual_ticker = st.session_state.quick_ticker
 
     period_label = DEFAULT_PERIOD_LABEL
-    search_col, control_col_1, control_col_2 = st.columns([1.1, 1.35, 1])
-
-    with search_col:
-        dashboard_query = st.text_input("Hisse ara", placeholder="Örn: Türk Hava, ASELS")
-
-    filtered_symbols = filter_symbols(bist_symbols, dashboard_query)
-    if filtered_symbols.empty:
-        st.warning("Aramanızla eşleşen BIST hissesi bulunamadı.")
-        filtered_symbols = bist_symbols
-
-    quick_options = filtered_symbols["symbol"].tolist()
-    if st.session_state.quick_ticker not in quick_options:
-        st.session_state.quick_ticker = quick_options[0]
     dashboard_symbol_labels = build_symbol_labels(bist_symbols)
+    with st.container(border=True):
+        search_col, select_col = st.columns([0.8, 1.35])
+        with search_col:
+            dashboard_query = st.text_input(
+                "Hisse veya şirket ara",
+                placeholder="Kod, şirket veya sektör yazın",
+                key="dashboard_symbol_query",
+            )
 
-    with control_col_1:
-        st.selectbox(
-            "CSV hızlı seçim",
-            quick_options,
-            key="quick_ticker",
-            on_change=sync_manual_ticker,
-            format_func=lambda symbol: dashboard_symbol_labels.get(symbol, symbol),
-        )
+        filtered_symbols = filter_symbols(bist_symbols, dashboard_query)
+        if filtered_symbols.empty:
+            st.warning("Aramayla eşleşen hisse bulunamadı; mevcut seçim korundu.")
+            filtered_symbols = bist_symbols[
+                bist_symbols["symbol"] == st.session_state.quick_ticker
+            ]
 
-    with control_col_2:
-        ticker = st.text_input("Manuel hisse kodu", key="manual_ticker").strip().upper()
+        quick_options = filtered_symbols["symbol"].tolist()
+        if not quick_options:
+            quick_options = [bist_symbols.iloc[0]["symbol"]]
+        if st.session_state.quick_ticker not in quick_options:
+            st.session_state.quick_ticker = quick_options[0]
+
+        with select_col:
+            ticker = st.selectbox(
+                "Hisse seç",
+                quick_options,
+                key="quick_ticker",
+                format_func=lambda symbol: dashboard_symbol_labels.get(symbol, symbol),
+            )
+            st.caption(f"{len(quick_options)} eşleşme · BIST yerel hisse listesi")
 
     if not ticker:
         st.info("Analiz için bir hisse kodu girin.")
         stop_app()
 
     data = load_market_data(ticker, period_label)
-    st.caption(f"Analiz zamanı: {current_timestamp_label()}")
     latest = data.iloc[-1]
+    selected_symbol_row = bist_symbols[bist_symbols["symbol"] == ticker]
+    selected_company = ticker if selected_symbol_row.empty else str(selected_symbol_row.iloc[0]["name"])
+    daily_change = safe_float(latest.get("DAILY_CHANGE_PCT"))
+    change_class = "nova-price-up" if daily_change >= 0 else "nova-price-down"
+    change_prefix = "+" if daily_change >= 0 else ""
+    st.markdown(
+        f"""
+        <div class="nova-selected-asset">
+            <div class="nova-selected-identity">
+                <div class="nova-selected-symbol">{escape(ticker)}</div>
+                <div class="nova-selected-name">{escape(selected_company)}</div>
+            </div>
+            <div class="nova-selected-price">
+                <span>Güncel fiyat</span>
+                <strong>₺{format_number(safe_float(latest['Close']))}</strong>
+                <b class="{change_class}">{change_prefix}{daily_change:.2f}%</b>
+            </div>
+            <div class="nova-selected-time">
+                <span>Analiz zamanı</span>
+                <strong>{escape(current_timestamp_label())}</strong>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     general_score, score_reasons = calculate_general_score(latest)
     signal_text, signal_detail, signal_class = decision_signal(general_score)
     support_level, resistance_level = support_resistance(data)
     confidence = nova_confidence_index(latest)
     trade_table = build_trade_horizon_table(latest, general_score, confidence, support_level, resistance_level)
 
-    st.markdown("### İşlem Vadeleri")
-    render_trade_horizon_cards(trade_table)
-
+    st.markdown("#### Analiz Vadesi")
     selected_horizon = st.radio(
-        "Bu analizi hangi işlem vadesine göre kullanacaksın?",
+        "Analizin kullanılacağı işlem vadesi",
         TRADE_HORIZONS,
         horizontal=True,
+        label_visibility="collapsed",
     )
 
     selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
-    render_pro_follow_window_detail(selected_horizon, selected_trade_row)
     selected_signal = str(selected_trade_row["Sinyal"])
     selected_score = int(selected_trade_row["Nova Skoru"])
     selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
@@ -2183,82 +2538,81 @@ def render_dashboard_page() -> None:
         "resistance": resistance_level,
     }
     radar_scores_v12 = nova_analytics.score_breakdown(latest, general_score, confidence)
-    nova_decision.render_premium_decision_center(
-        decision_payload,
-        radar_scores_v12,
-        show_diagnostics=False,
-    )
+    tab_names = ["Genel Bakış", "Grafik ve Teknik Analiz"]
+    if has_pro_access():
+        tab_names.append("AI Takip Listem")
+    dashboard_tabs = st.tabs(tab_names)
 
-    st.markdown("### KPI Kartları")
-    kpi_col_1, kpi_col_2, kpi_col_3, kpi_col_4 = st.columns(4)
-    with kpi_col_1:
-        render_value_card("Nova Score", f"{selected_score}/100")
-    with kpi_col_2:
-        render_value_card("AI Güven", f"%{confidence}")
-    with kpi_col_3:
-        render_value_card("Beklenen Getiri", f"%{selected_expected_return}")
-    with kpi_col_4:
-        render_value_card("Beklenen Taşıma Süresi", str(selected_trade_row["Beklenen Taşıma Süresi"]))
+    with dashboard_tabs[0]:
+        st.markdown("#### Vade Senaryoları")
+        render_trade_horizon_cards(trade_table)
+        render_pro_follow_window_detail(selected_horizon, selected_trade_row)
+        render_add_to_ai_watchlist(ticker, bist_symbols, selected_horizon)
+        render_one_month_trade_trends(data, ticker)
 
-    st.markdown("### Gauge + Teknik Barlar")
-    gauge_col, bars_col = st.columns([0.75, 1.65])
-    with gauge_col:
-        st.plotly_chart(create_score_gauge(general_score, dashboard_theme_mode), use_container_width=True)
-    with bars_col:
-        nova_decision.render_progress_bars(radar_scores_v12)
+        st.markdown("#### Piyasa Özeti")
+        kpi_col_1, kpi_col_2, kpi_col_3, kpi_col_4 = st.columns(4)
+        with kpi_col_1:
+            render_value_card("Nova Score", f"{selected_score}/100")
+        with kpi_col_2:
+            render_value_card("AI Güven", f"%{confidence}")
+        with kpi_col_3:
+            render_value_card("Beklenen Getiri", f"%{selected_expected_return}")
+        with kpi_col_4:
+            render_value_card("Taşıma Süresi", str(selected_trade_row["Beklenen Taşıma Süresi"]))
 
-    st.markdown("### AI Analiz Özeti")
-    decision_col, analysis_col = st.columns([0.85, 1.25])
-    with decision_col:
-        render_today_decision_box(
-            signal_text,
-            signal_detail,
-            signal_class,
-            latest,
-            support_level,
-            resistance_level,
+        st.markdown("#### NOVA AI Karar Özeti")
+        nova_decision.render_premium_decision_center(
+            decision_payload,
+            radar_scores_v12,
+            show_diagnostics=False,
         )
-    with analysis_col:
-        render_ai_summary_card(build_analysis(latest, general_score, score_reasons, signal_text))
 
-    st.markdown("### Fiyat Grafiği")
-    st.plotly_chart(
-        create_price_chart(
-            data,
-            ticker,
-            period_label,
-            support_level,
-            resistance_level,
-            stop_loss,
-            first_target,
-            second_target,
-            dashboard_theme_mode,
-        ),
-        use_container_width=True,
-    )
+        st.markdown("#### Analiz Özeti")
+        decision_col, analysis_col = st.columns([0.85, 1.25])
+        with decision_col:
+            render_today_decision_box(
+                signal_text,
+                signal_detail,
+                signal_class,
+                latest,
+                support_level,
+                resistance_level,
+            )
+        with analysis_col:
+            render_ai_summary_card(build_analysis(latest, general_score, score_reasons, signal_text))
 
-    st.markdown("### Bilgilendirme")
-    info_col_1, info_col_2 = st.columns(2)
-    with info_col_1:
-        st.markdown(
-            """
-            <div class="nova-card nova-info-card">
-                <div class="nova-card-title">Veri Kaynağı</div>
-                <div class="nova-card-note">Bu sürümde BIST hisse listesi yerel CSV dosyasından okunur.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    with dashboard_tabs[1]:
+        st.markdown("#### Fiyat ve Hedef Seviyeleri")
+        st.plotly_chart(
+            create_price_chart(
+                data,
+                ticker,
+                period_label,
+                support_level,
+                resistance_level,
+                stop_loss,
+                first_target,
+                second_target,
+                dashboard_theme_mode,
+            ),
+            use_container_width=True,
         )
-    with info_col_2:
-        st.markdown(
-            f"""
-            <div class="nova-card nova-info-card">
-                <div class="nova-card-title">Yasal Bilgilendirme</div>
-                <div class="nova-card-note">{DISCLAIMER}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+
+        st.markdown("#### Teknik Güç Dağılımı")
+        gauge_col, bars_col = st.columns([0.75, 1.65])
+        with gauge_col:
+            st.plotly_chart(create_score_gauge(general_score, dashboard_theme_mode), use_container_width=True)
+        with bars_col:
+            nova_decision.render_progress_bars(radar_scores_v12)
+
+    if has_pro_access():
+        with dashboard_tabs[2]:
+            render_pro_ai_watchlist(ticker, data, bist_symbols, selected_horizon)
+
+    with st.expander("Veri kaynağı ve yasal bilgilendirme", expanded=False):
+        st.caption("BIST hisse listesi yerel CSV dosyasından okunur.")
+        st.caption(DISCLAIMER)
 
 
 def render_coming_soon_page(page: str) -> None:
@@ -2429,6 +2783,122 @@ def position_tracking_row(position: dict[str, object]) -> tuple[dict[str, object
         },
         alerts,
     )
+
+
+def collect_position_notifications(positions: list[dict[str, object]]) -> list[dict[str, str]]:
+    notifications = []
+    today_key = now_istanbul().date().isoformat()
+    for position in positions:
+        row, alerts = position_tracking_row(position)
+        symbol = str(row["Hisse"])
+        position_id = str(position.get("id", symbol))
+        for alert in alerts:
+            severity = "warning"
+            if "Stop" in alert or "Sat riski" in alert:
+                severity = "danger"
+            elif "Hedef" in alert:
+                severity = "success"
+            notifications.append(
+                {
+                    "key": f"{position_id}:{today_key}:{alert}",
+                    "symbol": symbol,
+                    "title": f"NOVA AI · {symbol}",
+                    "message": alert,
+                    "severity": severity,
+                }
+            )
+    return notifications
+
+
+def render_browser_notification_control(notifications: list[dict[str, str]]) -> None:
+    payload = json.dumps(
+        [{"key": item["key"], "title": item["title"], "message": item["message"]} for item in notifications],
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
+    components.html(
+        f"""
+        <style>
+          * {{ box-sizing:border-box }}
+          body {{ margin:0; font-family:Inter,Arial,sans-serif; background:transparent; color:#e5edf7 }}
+          .notify-box {{ display:flex; align-items:center; justify-content:space-between; gap:14px; padding:14px 16px; border:1px solid #24324d; border-radius:11px; background:#0b1628 }}
+          .notify-copy strong {{ display:block; font-size:14px }} .notify-copy span {{ display:block; margin-top:4px; color:#8da2bf; font-size:12px }}
+          button {{ flex:0 0 auto; min-height:40px; padding:9px 14px; border:1px solid #38bdf8; border-radius:9px; color:#fff; background:linear-gradient(135deg,#0891b2,#2563eb); font-weight:750; cursor:pointer }}
+          button.enabled {{ border-color:#34d399; background:rgba(52,211,153,.16); color:#6ee7b7 }}
+          @media(max-width:560px) {{ .notify-box {{ align-items:stretch; flex-direction:column }} button {{ width:100% }} }}
+        </style>
+        <div class="notify-box">
+          <div class="notify-copy"><strong>Telefon / tarayıcı bildirimleri</strong><span id="status">İzin durumunu kontrol et</span></div>
+          <button id="enable">Bildirimleri etkinleştir</button>
+        </div>
+        <script>
+          const alerts = {payload};
+          const storageKey = 'nova_notifications_enabled';
+          const button = document.getElementById('enable');
+          const status = document.getElementById('status');
+          let NotificationApi = window.Notification;
+          try {{ if (window.parent && window.parent.Notification) NotificationApi = window.parent.Notification; }} catch (error) {{}}
+
+          function refreshState() {{
+            if (!NotificationApi) {{ status.textContent = 'Bu tarayıcı bildirimleri desteklemiyor'; button.disabled = true; return; }}
+            if (NotificationApi.permission === 'granted' && localStorage.getItem(storageKey) === '1') {{
+              status.textContent = 'Bu cihazda bildirimler açık'; button.textContent = 'Bildirimler açık'; button.classList.add('enabled');
+            }} else if (NotificationApi.permission === 'denied') {{
+              status.textContent = 'Bildirim izni tarayıcı ayarlarından engellenmiş';
+            }} else {{ status.textContent = 'Bir kez izin ver; aktif uyarılar bu cihazda gösterilsin'; }}
+          }}
+
+          function deliverAlerts() {{
+            if (!NotificationApi || NotificationApi.permission !== 'granted' || localStorage.getItem(storageKey) !== '1') return;
+            alerts.forEach(item => {{
+              const deliveredKey = 'nova_delivered_' + item.key;
+              if (localStorage.getItem(deliveredKey)) return;
+              new NotificationApi(item.title, {{ body:item.message, tag:item.key, renotify:false }});
+              localStorage.setItem(deliveredKey, new Date().toISOString());
+            }});
+          }}
+
+          button.addEventListener('click', async () => {{
+            if (!NotificationApi) return;
+            const permission = await NotificationApi.requestPermission();
+            if (permission === 'granted') localStorage.setItem(storageKey, '1');
+            refreshState(); deliverAlerts();
+          }});
+          refreshState(); deliverAlerts();
+        </script>
+        """,
+        height=92,
+        scrolling=False,
+    )
+
+
+def render_pro_notifications_page() -> None:
+    load_current_user_pro_data()
+    st.markdown("### Bildirimler")
+    positions = st.session_state.get("yeb_open_positions", [])
+    notifications = collect_position_notifications(positions) if positions else []
+    render_browser_notification_control(notifications)
+    st.caption("Mobil kısayol veya tarayıcı açıkken cihaz bildirimi gösterilir. Uygulama tamamen kapalıyken arka plan push için HTTPS push altyapısı gerekir.")
+
+    st.markdown("#### Aktif Bildirim Kuralları")
+    rule_cols = st.columns(5)
+    rules = ["Stopa ≤ %2", "Taşıma süresi doldu", "Hedef 1 görüldü", "Hedef 2 görüldü", "Sat riski ≥ %70"]
+    for column, rule in zip(rule_cols, rules):
+        with column:
+            st.markdown(f'<div class="nova-card dc-metric-card"><div class="nova-card-title">{escape(rule)}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("#### Aktif Uyarılar")
+    if not positions:
+        st.info("Bildirim üretmek için açık bir pozisyon bulunmuyor.")
+    elif not notifications:
+        st.success("Pozisyonlarda aktif bildirim koşulu yok.")
+    else:
+        for item in notifications:
+            icon = "🔴" if item["severity"] == "danger" else "🟢" if item["severity"] == "success" else "🟠"
+            st.markdown(
+                f'<div class="nova-card"><div class="nova-card-title">{icon} {escape(item["symbol"])}</div><div class="nova-card-value">{escape(item["message"])}</div></div>',
+                unsafe_allow_html=True,
+            )
+    st.caption(DISCLAIMER)
 
 
 def close_position(position: dict[str, object], sell_price: float, sell_date: object) -> dict[str, object]:
@@ -2884,6 +3354,8 @@ def render_yeb_pro_page() -> None:
         render_pro_positions_page()
     elif module == "Trade Journal":
         render_trade_journal_page()
+    elif module == "Bildirimler":
+        render_pro_notifications_page()
     else:
         render_coming_soon_page(f"⭐ {module}")
 
@@ -2906,12 +3378,13 @@ def main() -> None:
         page_title="NOVA AI",
         page_icon="N",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
     init_theme_state()
     init_access_state()
     apply_terminal_theme()
-    selected_page = render_sidebar()
+    render_app_header()
+    selected_page = render_top_navigation()
     render_page(selected_page)
 
 

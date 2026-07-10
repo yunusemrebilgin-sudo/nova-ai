@@ -96,6 +96,128 @@ def apply_terminal_theme() -> None:
                 color: var(--nova-text);
             }
 
+            [data-testid="stButton"] > button,
+            [data-testid="stFormSubmitButton"] > button {
+                min-height: 2.65rem;
+                border: 1px solid var(--nova-input-border) !important;
+                border-radius: 9px !important;
+                background: linear-gradient(180deg, var(--nova-panel-2), var(--nova-panel)) !important;
+                color: var(--nova-text) !important;
+                font-weight: 720 !important;
+                letter-spacing: 0.01em;
+                box-shadow: 0 7px 18px rgba(0, 0, 0, 0.14);
+                opacity: 1 !important;
+                transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+            }
+
+            [data-testid="stButton"] > button p,
+            [data-testid="stButton"] > button span,
+            [data-testid="stFormSubmitButton"] > button p,
+            [data-testid="stFormSubmitButton"] > button span {
+                color: inherit !important;
+                opacity: 1 !important;
+            }
+
+            [data-testid="stButton"] > button:hover,
+            [data-testid="stFormSubmitButton"] > button:hover {
+                border-color: var(--nova-cyan) !important;
+                color: var(--nova-cyan) !important;
+                box-shadow: 0 9px 22px rgba(14, 165, 233, 0.18);
+                transform: translateY(-1px);
+            }
+
+            [data-testid="stButton"] > button[kind="primary"],
+            [data-testid="stButton"] > button[data-testid="stBaseButton-primary"],
+            [data-testid="stFormSubmitButton"] > button[kind="primary"] {
+                border-color: var(--nova-cyan) !important;
+                background: linear-gradient(135deg, #0891b2, #2563eb) !important;
+                color: #ffffff !important;
+            }
+
+            [data-testid="stButton"] > button:disabled {
+                border-color: var(--nova-border) !important;
+                background: var(--nova-panel-2) !important;
+                color: var(--nova-muted) !important;
+                box-shadow: none;
+                transform: none;
+                opacity: 0.78 !important;
+            }
+
+            .st-key-selected_page {
+                width: 100% !important;
+                margin: 0 0 1.15rem;
+                padding: 0 !important;
+            }
+
+            .st-key-selected_page [data-testid="stRadio"],
+            .st-key-selected_page [data-testid="stRadio"] > div {
+                width: 100% !important;
+                max-width: none !important;
+            }
+
+            .st-key-selected_page div[role="radiogroup"] {
+                display: grid !important;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 5px;
+                width: 100% !important;
+                max-width: none !important;
+                padding: 6px;
+                border: 1px solid var(--nova-border);
+                border-radius: 14px;
+                background: rgba(7, 17, 31, 0.78);
+                box-shadow: 0 12px 30px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+            }
+
+            .st-key-selected_page label[data-baseweb="radio"] {
+                width: 100%;
+                min-width: 0 !important;
+                min-height: 48px;
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+                margin: 0 !important;
+                padding: 10px 14px !important;
+                border: 1px solid transparent;
+                border-radius: 10px;
+                background: transparent;
+                color: var(--nova-text) !important;
+                box-shadow: none;
+                cursor: pointer;
+                opacity: 0.72;
+                transition: border-color 160ms ease, background 160ms ease, opacity 160ms ease;
+            }
+
+            .st-key-selected_page label[data-baseweb="radio"] > div:first-child {
+                display: none !important;
+            }
+
+            .st-key-selected_page label[data-baseweb="radio"] p,
+            .st-key-selected_page label[data-baseweb="radio"] span,
+            .st-key-selected_page label[data-baseweb="radio"] * {
+                width: 100%;
+                margin: 0 !important;
+                color: var(--nova-text) !important;
+                font-size: 0.88rem;
+                font-weight: 740;
+                line-height: 1.2;
+                text-align: center;
+                white-space: normal;
+            }
+
+            .st-key-selected_page label[data-baseweb="radio"]:hover {
+                border-color: rgba(56, 189, 248, 0.18);
+                background: rgba(56, 189, 248, 0.07);
+                opacity: 1;
+            }
+
+            .st-key-selected_page label[data-baseweb="radio"]:has(input:checked) {
+                border-color: rgba(56, 189, 248, 0.46);
+                background: linear-gradient(135deg, rgba(8, 145, 178, 0.3), rgba(37, 99, 235, 0.26));
+                color: var(--nova-text) !important;
+                box-shadow: 0 7px 20px rgba(14, 165, 233, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+                opacity: 1;
+            }
+
             [data-testid="stHeader"] {
                 background: rgba(2, 6, 23, 0);
             }
@@ -228,6 +350,106 @@ def apply_terminal_theme() -> None:
                 font-size: 0.78rem;
                 margin-top: 0.12rem;
                 overflow-wrap: anywhere;
+            }
+
+            .nova-header-logo {
+                padding: 0.1rem 0 !important;
+            }
+
+            .nova-header-logo .nova-logo-main {
+                font-size: 1.12rem;
+                letter-spacing: 0.035em;
+            }
+
+            .nova-header-logo .nova-logo-sub {
+                font-size: 0.68rem;
+            }
+
+            .st-key-brand_refresh button {
+                min-height: 2.4rem !important;
+                padding: 0 !important;
+                border: 0 !important;
+                background: transparent !important;
+                box-shadow: none !important;
+                color: var(--nova-text) !important;
+                transform: none !important;
+            }
+
+            .st-key-brand_refresh button:hover {
+                color: var(--nova-cyan) !important;
+                border: 0 !important;
+                background: transparent !important;
+                box-shadow: none !important;
+                transform: none !important;
+            }
+
+            .st-key-brand_refresh button p,
+            .st-key-brand_refresh button span {
+                color: inherit !important;
+                font-size: clamp(1.55rem, 3vw, 2.15rem) !important;
+                font-weight: 880 !important;
+                letter-spacing: 0.12em !important;
+                line-height: 1 !important;
+                text-align: center !important;
+                text-shadow: 0 0 24px rgba(56, 189, 248, 0.14);
+            }
+
+            .nova-header-brand-marker {
+                margin-top: -0.1rem;
+                color: var(--nova-muted);
+                font-size: 0.58rem;
+                font-weight: 680;
+                letter-spacing: 0.24em;
+                text-align: center;
+            }
+
+            .nova-account-chip {
+                display: flex;
+                align-items: center;
+                gap: 9px;
+                width: fit-content;
+                max-width: 100%;
+                margin-top: 0.28rem;
+                padding: 7px 10px;
+                border: 1px solid var(--nova-border);
+                border-radius: 999px;
+                background: var(--nova-panel-2);
+                white-space: nowrap;
+            }
+
+            .nova-account-chip strong {
+                color: var(--nova-text);
+                font-size: 0.76rem;
+            }
+
+            .nova-account-chip span {
+                color: var(--nova-muted);
+                font-size: 0.68rem;
+            }
+
+            .st-key-account_menu {
+                width: 100% !important;
+                min-width: 150px !important;
+            }
+
+            .st-key-account_menu > div,
+            .st-key-account_menu button {
+                width: 100% !important;
+                min-width: 150px !important;
+                height: 2.55rem !important;
+                min-height: 2.55rem !important;
+                white-space: nowrap !important;
+                word-break: keep-all !important;
+                writing-mode: horizontal-tb !important;
+            }
+
+            .st-key-account_menu button p,
+            .st-key-account_menu button span,
+            .st-key-account_menu button div {
+                width: auto !important;
+                white-space: nowrap !important;
+                word-break: keep-all !important;
+                writing-mode: horizontal-tb !important;
             }
 
             .nova-sidebar-line {
@@ -413,6 +635,100 @@ def apply_terminal_theme() -> None:
 
             .nova-button-spacer {
                 height: 1.72rem;
+            }
+
+            .nova-selected-asset {
+                display: grid;
+                grid-template-columns: minmax(0, 1.45fr) minmax(170px, 0.7fr) minmax(190px, 0.72fr);
+                gap: 14px;
+                align-items: center;
+                margin: 0.55rem 0 0.8rem;
+                padding: 12px 15px;
+                border: 1px solid var(--nova-border);
+                border-radius: 10px;
+                background: linear-gradient(110deg, var(--nova-panel-2), var(--nova-panel));
+                box-shadow: var(--nova-shadow);
+            }
+
+            .nova-selected-symbol {
+                color: var(--nova-text);
+                font-size: 1.15rem;
+                font-weight: 820;
+                line-height: 1.2;
+            }
+
+            .nova-selected-name,
+            .nova-selected-price span,
+            .nova-selected-time span {
+                display: block;
+                margin-top: 4px;
+                color: var(--nova-muted);
+                font-size: 0.72rem;
+                line-height: 1.3;
+            }
+
+            .nova-selected-price strong,
+            .nova-selected-time strong {
+                display: inline-block;
+                margin-top: 5px;
+                color: var(--nova-text);
+                font-size: 0.94rem;
+                font-weight: 760;
+            }
+
+            .nova-selected-price strong {
+                font-size: clamp(1.25rem, 2vw, 1.65rem);
+                font-weight: 850;
+                letter-spacing: -0.025em;
+                text-shadow: 0 0 18px rgba(56, 189, 248, 0.16);
+            }
+
+            .nova-selected-price b {
+                display: inline-block;
+                margin-left: 10px;
+                padding: 5px 9px;
+                border-radius: 999px;
+                font-size: 0.9rem;
+                font-weight: 820;
+                line-height: 1;
+                animation: novaQuoteFramePulse 1.45s ease-out infinite;
+            }
+
+            .nova-price-up {
+                --nova-quote-pulse: rgba(52, 211, 153, 0.34);
+                color: #34d399;
+                border: 1px solid rgba(52, 211, 153, 0.32);
+                background: rgba(52, 211, 153, 0.12);
+                box-shadow: 0 0 16px rgba(52, 211, 153, 0.1);
+            }
+
+            .nova-price-down {
+                --nova-quote-pulse: rgba(251, 113, 133, 0.34);
+                color: #fb7185;
+                border: 1px solid rgba(251, 113, 133, 0.32);
+                background: rgba(251, 113, 133, 0.12);
+                box-shadow: 0 0 16px rgba(251, 113, 133, 0.1);
+            }
+
+            @keyframes novaQuoteFramePulse {
+                0%, 100% {
+                    opacity: 1;
+                    transform: scale(1);
+                    filter: brightness(1);
+                    box-shadow: 0 0 0 0 var(--nova-quote-pulse);
+                }
+                50% {
+                    opacity: 1;
+                    transform: scale(1);
+                    filter: brightness(1);
+                    box-shadow: 0 0 0 6px rgba(0, 0, 0, 0);
+                }
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                .nova-selected-price b {
+                    animation: none;
+                }
             }
 
             .nova-signal {
@@ -692,6 +1008,19 @@ def apply_terminal_theme() -> None:
                     flex-wrap: wrap;
                 }
 
+                [data-testid="stHorizontalBlock"]:has(.nova-header-brand-marker) {
+                    display: grid !important;
+                    grid-template-columns: minmax(24px, 0.28fr) minmax(190px, 1fr) minmax(150px, 0.28fr);
+                    gap: 8px !important;
+                    align-items: center;
+                }
+
+                [data-testid="stHorizontalBlock"]:has(.nova-header-brand-marker) > [data-testid="column"] {
+                    width: 100% !important;
+                    min-width: 0 !important;
+                    flex: initial !important;
+                }
+
                 [data-testid="stSidebar"] {
                     min-width: 0;
                     max-width: 100%;
@@ -699,6 +1028,25 @@ def apply_terminal_theme() -> None:
 
                 .nova-pro-follow-detail {
                     grid-template-columns: 1fr;
+                }
+
+                .st-key-selected_page div[role="radiogroup"] {
+                    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+                    gap: 3px;
+                    padding: 4px;
+                    border-radius: 11px;
+                }
+
+                .st-key-selected_page label[data-baseweb="radio"] {
+                    min-height: 44px;
+                    padding: 7px 3px !important;
+                    border-radius: 8px;
+                }
+
+                .st-key-selected_page label[data-baseweb="radio"] p,
+                .st-key-selected_page label[data-baseweb="radio"] span,
+                .st-key-selected_page label[data-baseweb="radio"] * {
+                    font-size: 0.66rem;
                 }
 
                 .nova-pro-follow-value {
@@ -712,6 +1060,32 @@ def apply_terminal_theme() -> None:
 
                 .yeb-journal-top {
                     flex-direction: column;
+                }
+            }
+
+            @media (max-width: 600px) {
+                [data-testid="stHorizontalBlock"]:has(.nova-header-brand-marker) {
+                    grid-template-columns: 8px minmax(150px, 1fr) minmax(112px, 0.48fr);
+                }
+
+                .st-key-account_menu,
+                .st-key-account_menu > div,
+                .st-key-account_menu button {
+                    min-width: 112px !important;
+                }
+
+                .st-key-account_menu button p,
+                .st-key-account_menu button span {
+                    font-size: 0.68rem !important;
+                }
+
+                .nova-selected-asset {
+                    grid-template-columns: 1fr 1fr;
+                    gap: 10px;
+                }
+
+                .nova-selected-identity {
+                    grid-column: 1 / -1;
                 }
             }
 
