@@ -147,7 +147,13 @@ def load_current_user_pro_data() -> None:
         return
     st.session_state.yeb_open_positions = user_store.load_open_positions(username)
     st.session_state.yeb_closed_trades = user_store.load_closed_trades(username)
-    st.session_state.yeb_ai_watchlist = user_store.load_ai_watchlist(username)
+    watchlist_loader = getattr(user_store, "load_ai_watchlist", None)
+    if callable(watchlist_loader):
+        st.session_state.yeb_ai_watchlist = watchlist_loader(username)
+    elif callable(getattr(user_store, "load_user_list", None)):
+        st.session_state.yeb_ai_watchlist = user_store.load_user_list(username, "ai_watchlist.json")
+    else:
+        st.session_state.yeb_ai_watchlist = []
     st.session_state.yeb_data_user = username
 
 
@@ -157,7 +163,12 @@ def save_current_user_pro_data() -> None:
         return
     user_store.save_open_positions(username, st.session_state.get("yeb_open_positions", []))
     user_store.save_closed_trades(username, st.session_state.get("yeb_closed_trades", []))
-    user_store.save_ai_watchlist(username, st.session_state.get("yeb_ai_watchlist", []))
+    watchlist = st.session_state.get("yeb_ai_watchlist", [])
+    watchlist_saver = getattr(user_store, "save_ai_watchlist", None)
+    if callable(watchlist_saver):
+        watchlist_saver(username, watchlist)
+    elif callable(getattr(user_store, "save_user_list", None)):
+        user_store.save_user_list(username, "ai_watchlist.json", watchlist)
     st.session_state.yeb_data_user = username
 
 
