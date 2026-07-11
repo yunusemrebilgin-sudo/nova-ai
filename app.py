@@ -250,7 +250,7 @@ def render_app_header() -> None:
         )
     with menu_col:
         menu_label = f"{current_auth_user()} · PRO" if has_pro_access() else "Hesap"
-        with st.popover(menu_label, type="primary", use_container_width=True, key="account_menu"):
+        with st.popover(menu_label, use_container_width=True, key="account_menu"):
             if is_authenticated():
                 watch_count = len(st.session_state.get("yeb_ai_watchlist", []))
                 st.markdown(f"**{escape(current_auth_user())}**")
@@ -1956,7 +1956,7 @@ def close_scanner_stock_dialog() -> None:
     st.query_params.clear()
 
 
-@st.dialog("Hisse Detayı", width="large", on_dismiss=close_scanner_stock_dialog)
+@st.dialog("Hisse Detayı")
 def render_scanner_stock_dialog(symbol: str) -> None:
     data = load_market_data(symbol, DEFAULT_PERIOD_LABEL)
     latest = data.iloc[-1]
