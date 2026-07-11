@@ -3574,6 +3574,8 @@ def main() -> None:
     init_theme_state()
     init_access_state()
     apply_terminal_theme()
+    if str(st.query_params.get("scanner_detail", "")).strip():
+        st.session_state.selected_page = SMART_SCANNER_PAGE
     render_app_header()
     selected_page = render_top_navigation()
     render_page(selected_page)
