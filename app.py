@@ -2,6 +2,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import json
 import re
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
@@ -236,11 +237,12 @@ def symbol_label(symbol: str, symbols: pd.DataFrame) -> str:
 def render_app_header() -> None:
     spacer_col, brand_col, menu_col = st.columns([0.28, 1.0, 0.28])
     with spacer_col:
-        st.empty()
+        st.markdown('<div class="nova-header-spacer" aria-hidden="true"></div>', unsafe_allow_html=True)
     with brand_col:
         if st.button("NOVA AI", key="brand_refresh", use_container_width=True):
             load_market_data.clear()
             load_one_month_close_data.clear()
+            load_live_spot_quote.clear()
             st.rerun()
         st.markdown(
             '<div class="nova-header-brand-marker">AI MARKET INTELLIGENCE</div>',
@@ -248,7 +250,7 @@ def render_app_header() -> None:
         )
     with menu_col:
         menu_label = f"{current_auth_user()} · PRO" if has_pro_access() else "Hesap"
-        with st.popover(menu_label, use_container_width=True, key="account_menu"):
+        with st.popover(menu_label, type="primary", use_container_width=True, key="account_menu"):
             if is_authenticated():
                 watch_count = len(st.session_state.get("yeb_ai_watchlist", []))
                 st.markdown(f"**{escape(current_auth_user())}**")
@@ -1433,6 +1435,40 @@ def load_one_month_close_data(ticker: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def parse_tr_number(value: str) -> float:
+    return float(value.strip().replace(".", "").replace(",", "."))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_live_spot_quote(ticker: str) -> dict[str, object] | None:
+    symbol = ticker.replace(".IS", "").strip().upper()
+    if not symbol:
+        return None
+    try:
+        response = requests.get(
+            f"https://www.oyakyatirim.com.tr/hisse-detay/{symbol}",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NOVA-AI/1.0)"},
+            timeout=6,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    price_match = re.search(r'<span\s+style="color:#e6400c">\s*([\d.,]+)\s*</span>', response.text, re.I)
+    change_match = re.search(r'<span\s+style="color:(?:green|red)">\s*%?\s*([+-]?[\d.,]+)', response.text, re.I)
+    if not price_match or not change_match:
+        return None
+    try:
+        return {
+            "price": parse_tr_number(price_match.group(1)),
+            "change_pct": parse_tr_number(change_match.group(1)),
+            "source": "OYAK Yatırım",
+            "fetched_at": current_timestamp_label(),
+        }
+    except ValueError:
+        return None
+
+
 def render_one_month_trade_trends(data: pd.DataFrame, ticker: str) -> None:
     """Render the latest 30 calendar days as daily positive/negative return bars."""
     fresh_data = load_one_month_close_data(ticker)
@@ -1441,6 +1477,13 @@ def render_one_month_trade_trends(data: pd.DataFrame, ticker: str) -> None:
     if getattr(trend_data.index, "tz", None) is not None:
         trend_data.index = trend_data.index.tz_convert(APP_TIMEZONE_NAME).tz_localize(None)
     trend_data.index = pd.DatetimeIndex(trend_data.index).normalize()
+    spot_quote = load_live_spot_quote(ticker)
+    if spot_quote:
+        viewed_date = pd.Timestamp(now_istanbul().date())
+        latest_business_date = pd.bdate_range(end=viewed_date, periods=1)[0]
+        trend_data.loc[latest_business_date, "Close"] = float(spot_quote["price"])
+        using_cached_fallback = False
+        trend_data = trend_data.sort_index()
     trend_data["change_pct"] = trend_data["Close"].pct_change() * 100
     viewed_day = pd.Timestamp(now_istanbul().date())
     cutoff = viewed_day - pd.Timedelta(days=29)
@@ -1903,6 +1946,87 @@ def render_percent_impact_badge(value: object) -> str:
     return f'<span class="nova-scan-badge {badge_class}">{escape(text)}</span>'
 
 
+def open_symbol_in_dashboard(symbol: str) -> None:
+    st.session_state.quick_ticker = symbol
+    st.session_state.selected_page = PUBLIC_DASHBOARD_PAGE
+    st.query_params.clear()
+
+
+def close_scanner_stock_dialog() -> None:
+    st.query_params.clear()
+
+
+@st.dialog("Hisse Detayı", width="large", on_dismiss=close_scanner_stock_dialog)
+def render_scanner_stock_dialog(symbol: str) -> None:
+    data = load_market_data(symbol, DEFAULT_PERIOD_LABEL)
+    latest = data.iloc[-1]
+    spot_quote = load_live_spot_quote(symbol)
+    price = float(spot_quote["price"]) if spot_quote else safe_float(latest["Close"])
+    change_pct = float(spot_quote["change_pct"]) if spot_quote else safe_float(latest.get("DAILY_CHANGE_PCT"))
+    score, _ = calculate_general_score(latest)
+    confidence = nova_confidence_index(latest)
+    support_level, resistance_level = support_resistance(data)
+    horizon = st.selectbox(
+        "Analiz vadesi",
+        TRADE_HORIZONS,
+        key=f"scanner_dialog_horizon_{re.sub(r'[^A-Za-z0-9]', '_', symbol)}",
+    )
+    horizon_score_value = horizon_score(score, latest, horizon)
+    signal = trade_signal(horizon_score_value, latest)
+    suitability = buy_suitability_percent(horizon_score_value, latest, horizon)
+    sell_risk = sell_signal_probability(latest, horizon_score_value, horizon)
+    expected_return = expected_return_potential(latest, resistance_level, horizon)
+    target_1, target_2, stop_loss, _ = target_stop_levels(
+        latest,
+        support_level,
+        resistance_level,
+        expected_return,
+    )
+
+    st.markdown(f"### {escape(symbol)}")
+    price_col, score_col, confidence_col, signal_col = st.columns(4)
+    price_col.metric("Güncel fiyat", f"₺{format_number(price)}", f"%{change_pct:+.2f}")
+    score_col.metric("Nova Score", f"{horizon_score_value}/100")
+    confidence_col.metric("AI Güven", f"%{confidence}")
+    signal_col.metric("Alım uygunluğu", f"%{suitability}")
+    st.markdown(
+        f"**Ana görünüm:** {escape(signal)} · **Sat riski:** %{sell_risk} · "
+        f"**Hedef 1:** {format_number(target_1)} · **Hedef 2:** {format_number(target_2)} · "
+        f"**Stop:** {format_number(stop_loss)}"
+    )
+    st.plotly_chart(
+        create_price_chart(
+            data,
+            symbol,
+            DEFAULT_PERIOD_LABEL,
+            support_level,
+            resistance_level,
+            stop_loss,
+            target_1,
+            target_2,
+            st.session_state.get("theme_mode", "dark"),
+        ),
+        use_container_width=True,
+        key=f"scanner_dialog_chart_{symbol}",
+    )
+    dashboard_col, close_col = st.columns([0.72, 0.28])
+    with dashboard_col:
+        st.button(
+            "Dashboard'da ayrıntılı aç",
+            type="primary",
+            use_container_width=True,
+            on_click=open_symbol_in_dashboard,
+            args=(symbol,),
+        )
+    with close_col:
+        st.button(
+            "Kapat",
+            use_container_width=True,
+            on_click=close_scanner_stock_dialog,
+        )
+    st.caption(DISCLAIMER)
+
+
 def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
     sortable_columns = {"AI Güven Endeksi", "Beklenen Getiri %", "Haber Etkisi %", "Haber Dahil Getiri %"}
     header_cells = []
@@ -1916,11 +2040,18 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             header_cells.append(f"<th>{escape(column)}</th>")
     header = "".join(header_cells)
     rows = []
+    mobile_cards = []
     for _, row in table[columns].iterrows():
+        symbol = str(row.get("Hisse", ""))
         cells = []
         for column in columns:
             value = row[column]
-            if column == "Nova Skoru":
+            if column == "Hisse":
+                cells.append(
+                    f'<td><a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_top" '
+                    f'title="{escape(symbol)} detayını aç">{escape(symbol)}</a></td>'
+                )
+            elif column == "Nova Skoru":
                 cells.append(f'<td><span class="nova-score-strong">{int(value)}/100</span></td>')
             elif column == "Haber Etkisi %":
                 cells.append(f"<td>{render_percent_impact_badge(value)}</td>")
@@ -1931,6 +2062,26 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             else:
                 cells.append(f"<td>{escape(str(value))}</td>")
         rows.append(f"<tr>{''.join(cells)}</tr>")
+        score_value = int(row.get("Nova Skoru", 0))
+        confidence_value = row.get("AI Güven Endeksi", "-")
+        expected_value = row.get("Beklenen Getiri %", "-")
+        signal_value = row.get("Sinyal", "-")
+        risk_value = row.get("Risk", "-")
+        mobile_cards.append(
+            f"""
+            <article class="nova-mobile-stock">
+                <div class="nova-mobile-top">
+                    <a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_top">{escape(symbol)}</a>
+                    <span class="nova-score-strong">{score_value}/100</span>
+                </div>
+                <div class="nova-mobile-badges">{render_badge(signal_value)} {render_badge(risk_value)}</div>
+                <div class="nova-mobile-metrics">
+                    <div><span>AI Güven</span><strong>{escape(str(confidence_value))}</strong></div>
+                    <div><span>Beklenen Getiri</span><strong>%{escape(str(expected_value))}</strong></div>
+                </div>
+            </article>
+            """
+        )
 
     table_height = min(900, max(220, 92 + (len(rows) * 58)))
     components.html(
@@ -2006,6 +2157,15 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             .nova-scan-table tbody tr:hover {{
                 background: rgba(56, 189, 248, 0.11);
             }}
+            .nova-symbol-link {{
+                color: #67d8ff;
+                font-size: 0.94rem;
+                font-weight: 840;
+                text-decoration: none;
+                border-bottom: 1px dashed rgba(103, 216, 255, 0.42);
+                cursor: pointer;
+            }}
+            .nova-symbol-link:hover {{ color: #ffffff; border-bottom-color: #67d8ff; }}
             .nova-score-strong {{
                 display: inline-block;
                 color: var(--nova-text, #e5eefc);
@@ -2040,11 +2200,24 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
                 background: rgba(239, 68, 68, 0.15);
                 border-color: rgba(239, 68, 68, 0.40);
             }}
+            .nova-mobile-list {{ display: none; }}
+            .nova-mobile-stock {{
+                padding: 13px;
+                border: 1px solid rgba(148, 163, 184, 0.20);
+                border-radius: 11px;
+                background: rgba(15, 23, 42, 0.46);
+            }}
+            .nova-mobile-top {{ display:flex; align-items:center; justify-content:space-between; gap:12px; }}
+            .nova-mobile-badges {{ display:flex; flex-wrap:wrap; gap:6px; margin-top:11px; }}
+            .nova-mobile-metrics {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:11px; }}
+            .nova-mobile-metrics div {{ padding:8px 9px; border-radius:8px; background:rgba(2,6,23,.28); }}
+            .nova-mobile-metrics span {{ display:block; color:#93a4bc; font-size:.67rem; }}
+            .nova-mobile-metrics strong {{ display:block; margin-top:4px; color:#e5eefc; font-size:.86rem; }}
             @media (max-width: 700px) {{
+                .nova-scan-table-wrap {{ display:block; }}
+                .nova-mobile-list {{ display:none !important; }}
                 .nova-scan-table th,
-                .nova-scan-table td {{
-                    padding: 11px 12px;
-                }}
+                .nova-scan-table td {{ padding:11px 12px; }}
             }}
         </style>
         <div class="nova-scan-table-wrap">
@@ -2053,6 +2226,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
                 <tbody>{''.join(rows)}</tbody>
             </table>
         </div>
+        <div class="nova-mobile-list">{''.join(mobile_cards)}</div>
         <script>
             (() => {{
                 const table = document.querySelector(".nova-scan-table");
@@ -2293,6 +2467,9 @@ def render_smart_scanner_page() -> None:
         st.session_state.smart_scanner_calc_version = SMART_SCANNER_CALC_VERSION
 
     bist_symbols = get_bist_symbols_or_stop()
+    requested_symbol = str(st.query_params.get("scanner_detail", "")).strip().upper()
+    if requested_symbol and requested_symbol in set(bist_symbols["symbol"]):
+        render_scanner_stock_dialog(requested_symbol)
 
     symbol_rows_df = bist_symbols[["symbol", "name"]]
     symbol_rows = tuple(symbol_rows_df.itertuples(index=False, name=None))
@@ -2475,9 +2652,12 @@ def render_dashboard_page() -> None:
 
     data = load_market_data(ticker, period_label)
     latest = data.iloc[-1]
+    spot_quote = load_live_spot_quote(ticker)
     selected_symbol_row = bist_symbols[bist_symbols["symbol"] == ticker]
     selected_company = ticker if selected_symbol_row.empty else str(selected_symbol_row.iloc[0]["name"])
-    daily_change = safe_float(latest.get("DAILY_CHANGE_PCT"))
+    display_price = float(spot_quote["price"]) if spot_quote else safe_float(latest["Close"])
+    daily_change = float(spot_quote["change_pct"]) if spot_quote else safe_float(latest.get("DAILY_CHANGE_PCT"))
+    price_source = str(spot_quote["source"]) if spot_quote else "Yahoo Finance · son doğrulanmış kapanış"
     change_class = "nova-price-up" if daily_change >= 0 else "nova-price-down"
     change_prefix = "+" if daily_change >= 0 else ""
     st.markdown(
@@ -2489,8 +2669,9 @@ def render_dashboard_page() -> None:
             </div>
             <div class="nova-selected-price">
                 <span>Güncel fiyat</span>
-                <strong>₺{format_number(safe_float(latest['Close']))}</strong>
+                <strong>₺{format_number(display_price)}</strong>
                 <b class="{change_class}">{change_prefix}{daily_change:.2f}%</b>
+                <span>{escape(price_source)}</span>
             </div>
             <div class="nova-selected-time">
                 <span>Analiz zamanı</span>

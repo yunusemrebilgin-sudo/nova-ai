@@ -145,7 +145,7 @@ def apply_terminal_theme() -> None:
 
             .st-key-selected_page {
                 width: 100% !important;
-                margin: 0 0 1.15rem;
+                margin: 0 0 0.75rem;
                 padding: 0 !important;
             }
 
@@ -288,7 +288,7 @@ def apply_terminal_theme() -> None:
             }
 
             .block-container {
-                padding-top: 1.25rem;
+                padding-top: 0.75rem;
                 padding-bottom: 1.5rem;
                 max-width: 1680px;
             }
@@ -330,6 +330,14 @@ def apply_terminal_theme() -> None:
                 font-weight: 740 !important;
                 margin-top: 1.05rem !important;
                 margin-bottom: 0.55rem !important;
+            }
+
+            h4 {
+                font-size: clamp(1.18rem, 2.2vw, 1.5rem) !important;
+                font-weight: 760 !important;
+                margin-top: 1rem !important;
+                margin-bottom: 0.6rem !important;
+                letter-spacing: -0.015em;
             }
 
             .nova-logo {
@@ -395,12 +403,18 @@ def apply_terminal_theme() -> None:
             }
 
             .nova-header-brand-marker {
-                margin-top: -0.1rem;
+                margin-top: 0.28rem;
                 color: var(--nova-muted);
-                font-size: 0.58rem;
+                font-size: 0.54rem;
                 font-weight: 680;
-                letter-spacing: 0.24em;
+                letter-spacing: 0.2em;
                 text-align: center;
+                white-space: nowrap;
+            }
+
+            .nova-header-spacer {
+                width: 100%;
+                height: 1px;
             }
 
             .nova-account-chip {
@@ -443,10 +457,29 @@ def apply_terminal_theme() -> None:
                 writing-mode: horizontal-tb !important;
             }
 
+            .st-key-account_menu button,
+            .st-key-account_menu [data-testid="stPopover"] button,
+            .st-key-account_menu [data-testid="stBaseButton-primary"] {
+                border: 1px solid var(--nova-input-border) !important;
+                background: linear-gradient(135deg, #075985, #1d4ed8) !important;
+                color: #ffffff !important;
+                box-shadow: 0 7px 18px rgba(0, 0, 0, 0.14) !important;
+                opacity: 1 !important;
+            }
+
+            .st-key-account_menu button:hover,
+            .st-key-account_menu [data-testid="stPopover"] button:hover,
+            .st-key-account_menu [data-testid="stBaseButton-primary"]:hover {
+                border-color: var(--nova-cyan) !important;
+                background: linear-gradient(135deg, #0369a1, #2563eb) !important;
+                color: #ffffff !important;
+            }
+
             .st-key-account_menu button p,
             .st-key-account_menu button span,
             .st-key-account_menu button div {
                 width: auto !important;
+                color: #ffffff !important;
                 white-space: nowrap !important;
                 word-break: keep-all !important;
                 writing-mode: horizontal-tb !important;
@@ -639,8 +672,8 @@ def apply_terminal_theme() -> None:
 
             .nova-selected-asset {
                 display: grid;
-                grid-template-columns: minmax(0, 1.45fr) minmax(170px, 0.7fr) minmax(190px, 0.72fr);
-                gap: 14px;
+                grid-template-columns: minmax(120px, 1.05fr) minmax(155px, 0.9fr) minmax(175px, 1fr);
+                gap: 12px;
                 align-items: center;
                 margin: 0.55rem 0 0.8rem;
                 padding: 12px 15px;
@@ -652,9 +685,10 @@ def apply_terminal_theme() -> None:
 
             .nova-selected-symbol {
                 color: var(--nova-text);
-                font-size: 1.15rem;
+                font-size: 1.05rem;
                 font-weight: 820;
                 line-height: 1.2;
+                white-space: nowrap;
             }
 
             .nova-selected-name,
