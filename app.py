@@ -143,6 +143,13 @@ def current_auth_user() -> str:
 
 
 def load_current_user_pro_data() -> None:
+    try:
+        user_store.configure_supabase(
+            st.secrets.get("SUPABASE_URL", ""),
+            st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", ""),
+        )
+    except Exception:
+        pass
     username = current_auth_user()
     if not username or st.session_state.get("yeb_data_user") == username:
         return
@@ -155,6 +162,8 @@ def load_current_user_pro_data() -> None:
         st.session_state.yeb_ai_watchlist = user_store.load_user_list(username, "ai_watchlist.json")
     else:
         st.session_state.yeb_ai_watchlist = []
+    simulation_loader = getattr(user_store, "load_simulation", None)
+    st.session_state.yeb_simulation = simulation_loader(username) if callable(simulation_loader) else {}
     st.session_state.yeb_data_user = username
 
 
@@ -170,6 +179,9 @@ def save_current_user_pro_data() -> None:
         watchlist_saver(username, watchlist)
     elif callable(getattr(user_store, "save_user_list", None)):
         user_store.save_user_list(username, "ai_watchlist.json", watchlist)
+    simulation_saver = getattr(user_store, "save_simulation", None)
+    if callable(simulation_saver):
+        simulation_saver(username, st.session_state.get("yeb_simulation", {}))
     st.session_state.yeb_data_user = username
 
 
@@ -3583,6 +3595,300 @@ def render_trade_journal_page() -> None:
     st.caption(DISCLAIMER)
 
 
+SIMULATION_WEEKLY_LIMIT = 10_000.0
+
+
+def current_simulation_week() -> str:
+    iso = now_istanbul().date().isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def ensure_weekly_simulation() -> dict[str, object]:
+    week_key = current_simulation_week()
+    simulation = st.session_state.get("yeb_simulation", {})
+    if not isinstance(simulation, dict) or simulation.get("week") != week_key:
+        archives = list(simulation.get("archives", [])) if isinstance(simulation, dict) else []
+        if isinstance(simulation, dict) and simulation.get("week"):
+            old_positions = simulation.get("positions", [])
+            old_value = float(simulation.get("cash", 0)) + sum(
+                float(item.get("quantity", 0)) * float(item.get("last_price", item.get("avg_price", 0)))
+                for item in old_positions
+            )
+            old_start = float(simulation.get("starting_cash", SIMULATION_WEEKLY_LIMIT))
+            archives.append({
+                "week": simulation.get("week"),
+                "ending_value": round(old_value, 2),
+                "pnl": round(old_value - old_start, 2),
+                "pnl_pct": round(((old_value / old_start) - 1) * 100, 2) if old_start else 0.0,
+                "trade_count": len(simulation.get("trades", [])),
+                "closed_at": now_istanbul().isoformat(),
+            })
+        simulation = {
+            "week": week_key,
+            "starting_cash": SIMULATION_WEEKLY_LIMIT,
+            "cash": SIMULATION_WEEKLY_LIMIT,
+            "positions": [],
+            "trades": [],
+            "archives": archives[-52:],
+        }
+        st.session_state.yeb_simulation = simulation
+        save_current_user_pro_data()
+    return simulation
+
+
+def simulation_quote(symbol: str) -> tuple[float, float]:
+    quote = load_live_spot_quote(symbol)
+    if quote:
+        return float(quote["price"]), float(quote["change_pct"])
+    data = load_market_data(symbol, DEFAULT_PERIOD_LABEL)
+    latest = data.iloc[-1]
+    return safe_float(latest["Close"]), safe_float(latest.get("DAILY_CHANGE_PCT"))
+
+
+def reset_simulation_quantity() -> None:
+    st.session_state.simulation_buy_quantity = 1
+
+
+def close_simulation_position(
+    simulation: dict[str, object],
+    position: dict[str, object],
+    sell_price: float,
+    reason: str,
+) -> None:
+    quantity = int(position["quantity"])
+    proceeds = round(quantity * sell_price, 2)
+    realized_pnl = round((sell_price - float(position["avg_price"])) * quantity, 2)
+    simulation["cash"] = round(float(simulation["cash"]) + proceeds, 2)
+    simulation["positions"].remove(position)
+    simulation["trades"].append({
+        "side": "SAT",
+        "symbol": position["symbol"],
+        "quantity": quantity,
+        "price": sell_price,
+        "total": proceeds,
+        "pnl": realized_pnl,
+        "reason": reason,
+        "time": now_istanbul().isoformat(),
+    })
+
+
+def render_pro_simulation_page() -> None:
+    load_current_user_pro_data()
+    simulation = ensure_weekly_simulation()
+    positions = simulation.setdefault("positions", [])
+    trades = simulation.setdefault("trades", [])
+    cash = float(simulation.get("cash", SIMULATION_WEEKLY_LIMIT))
+
+    quote_map: dict[str, tuple[float, float]] = {}
+    for position in positions:
+        symbol = str(position.get("symbol", ""))
+        if symbol:
+            quote_map[symbol] = simulation_quote(symbol)
+            position["last_price"] = quote_map[symbol][0]
+
+    automatic_sales: list[str] = []
+    for position in list(positions):
+        position_symbol = str(position["symbol"])
+        current_price = quote_map[position_symbol][0]
+        stop_price = safe_float(position.get("stop_price"))
+        target_price = safe_float(position.get("target_price"))
+        if stop_price > 0 and current_price <= stop_price:
+            close_simulation_position(simulation, position, current_price, "Stop loss emri")
+            automatic_sales.append(f"{position_symbol}: stop loss emri çalıştı")
+        elif target_price > 0 and current_price >= target_price:
+            close_simulation_position(simulation, position, current_price, "Hedef satış emri")
+            automatic_sales.append(f"{position_symbol}: hedef satış emri çalıştı")
+    if automatic_sales:
+        save_current_user_pro_data()
+        st.success(" · ".join(automatic_sales))
+        st.rerun()
+
+    market_value = sum(
+        float(position.get("quantity", 0)) * quote_map.get(str(position.get("symbol", "")), (0.0, 0.0))[0]
+        for position in positions
+    )
+    portfolio_value = cash + market_value
+    total_pnl = portfolio_value - SIMULATION_WEEKLY_LIMIT
+    total_pnl_pct = (total_pnl / SIMULATION_WEEKLY_LIMIT) * 100
+
+    st.markdown("### Haftalık Sanal Portföy")
+    st.caption(f"{simulation['week']} · Her hafta ₺10.000 sanal limit ile yeniden başlar. Gerçek emir oluşturmaz.")
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Toplam Değer", f"₺{format_number(portfolio_value)}", f"%{total_pnl_pct:+.2f}")
+    metric_cols[1].metric("Kullanılabilir Bakiye", f"₺{format_number(cash)}")
+    metric_cols[2].metric("Pozisyon Değeri", f"₺{format_number(market_value)}")
+    metric_cols[3].metric("Toplam Kâr/Zarar", f"₺{format_number(total_pnl)}")
+
+    st.markdown("#### Sanal İşlem")
+    bist_symbols = get_bist_symbols_or_stop()
+    labels = build_symbol_labels(bist_symbols)
+    buy_col, qty_col = st.columns([1.5, 0.65])
+    with buy_col:
+        symbol = st.selectbox(
+            "Hisse",
+            bist_symbols["symbol"].tolist(),
+            format_func=lambda value: labels.get(value, value),
+            key="simulation_buy_symbol",
+            on_change=reset_simulation_quantity,
+        )
+    buy_price, buy_change = simulation_quote(symbol)
+    max_quantity = int(cash // buy_price) if buy_price > 0 else 0
+    with qty_col:
+        quantity = st.number_input(
+            "Lot",
+            min_value=1,
+            max_value=max(1, max_quantity),
+            value=1,
+            step=1,
+            key="simulation_buy_quantity",
+        )
+    order_col_1, order_col_2, action_col = st.columns([1, 1, 0.7])
+    with order_col_1:
+        stop_price = st.number_input(
+            "Stop loss fiyatı", min_value=0.0, value=round(buy_price * 0.95, 2),
+            step=0.05, key=f"simulation_stop_{symbol}",
+        )
+        stop_pct = ((stop_price / buy_price) - 1) * 100 if buy_price else 0.0
+        st.caption(f"Alış fiyatına uzaklık: %{stop_pct:+.2f}")
+    with order_col_2:
+        target_price = st.number_input(
+            "Hedef satış fiyatı", min_value=0.0, value=round(buy_price * 1.10, 2),
+            step=0.05, key=f"simulation_target_{symbol}",
+        )
+        target_pct = ((target_price / buy_price) - 1) * 100 if buy_price else 0.0
+        st.caption(f"Alış fiyatına uzaklık: %{target_pct:+.2f}")
+    with action_col:
+        st.caption(f"₺{format_number(buy_price)} · %{buy_change:+.2f}")
+        buy_clicked = st.button(
+            "Sanal Al",
+            type="primary",
+            use_container_width=True,
+            disabled=max_quantity < 1,
+        )
+    if buy_clicked:
+        cost = round(float(quantity) * buy_price, 2)
+        if cost > cash:
+            st.error("Bu işlem için sanal bakiyen yetersiz.")
+        elif stop_price >= buy_price:
+            st.error("Stop loss alış fiyatından düşük olmalı.")
+        elif target_price <= buy_price:
+            st.error("Hedef satış fiyatı alış fiyatından yüksek olmalı.")
+        else:
+            existing = next((p for p in positions if p.get("symbol") == symbol), None)
+            if existing:
+                old_qty = int(existing["quantity"])
+                new_qty = old_qty + int(quantity)
+                existing["avg_price"] = round(((old_qty * float(existing["avg_price"])) + cost) / new_qty, 4)
+                existing["quantity"] = new_qty
+                existing["stop_price"] = float(stop_price)
+                existing["target_price"] = float(target_price)
+            else:
+                positions.append({"symbol": symbol, "quantity": int(quantity), "avg_price": buy_price, "stop_price": float(stop_price), "target_price": float(target_price), "last_price": buy_price, "bought_at": now_istanbul().isoformat()})
+            simulation["cash"] = round(cash - cost, 2)
+            trades.append({"side": "AL", "symbol": symbol, "quantity": int(quantity), "price": buy_price, "total": cost, "time": now_istanbul().isoformat()})
+            save_current_user_pro_data()
+            st.rerun()
+
+    st.markdown("#### Açık Pozisyonlar")
+    if not positions:
+        st.info("Henüz sanal pozisyon yok.")
+    else:
+        for position in positions:
+            position_symbol = str(position["symbol"])
+            current_price, daily_change = quote_map[position_symbol]
+            position_qty = int(position["quantity"])
+            avg_price = float(position["avg_price"])
+            pnl = (current_price - avg_price) * position_qty
+            pnl_pct = ((current_price / avg_price) - 1) * 100 if avg_price else 0.0
+            pnl_class = "positive" if pnl >= 0 else "negative"
+            stop_value = safe_float(position.get("stop_price"))
+            target_value = safe_float(position.get("target_price"))
+            st.markdown(
+                f"""
+                <div class="nova-card yeb-journal-card">
+                    <div class="yeb-journal-top">
+                        <div><div class="yeb-journal-symbol">{escape(position_symbol)}</div>
+                        <div class="nova-card-note">{position_qty} lot · Ort. alış ₺{format_number(avg_price)}</div></div>
+                        <div class="yeb-journal-pnl {pnl_class}">%{pnl_pct:+.2f}<br><small>₺{format_number(pnl)}</small></div>
+                    </div>
+                    <div class="yeb-journal-grid">
+                        <div><span>Güncel fiyat</span><strong>₺{format_number(current_price)}</strong></div>
+                        <div><span>Günlük değişim</span><strong>%{daily_change:+.2f}</strong></div>
+                        <div><span>Stop loss emri</span><strong>₺{format_number(stop_value)}</strong></div>
+                        <div><span>Hedef satış emri</span><strong>₺{format_number(target_value)}</strong></div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        sell_options = [str(position["symbol"]) for position in positions]
+        sell_col, sell_action_col = st.columns([1.5, 0.7])
+        with sell_col:
+            sell_symbol = st.selectbox("Kapatılacak pozisyon", sell_options, key="simulation_sell_symbol")
+        with sell_action_col:
+            st.caption("Pozisyonun tamamı")
+            sell_clicked = st.button("Sanal Sat", use_container_width=True)
+        if sell_clicked:
+            position = next(p for p in positions if p["symbol"] == sell_symbol)
+            sell_price, _ = simulation_quote(sell_symbol)
+            close_simulation_position(simulation, position, sell_price, "Manuel satış")
+            save_current_user_pro_data()
+            st.rerun()
+
+    st.markdown("#### İşlem Geçmişi")
+    if not trades:
+        st.caption("Bu hafta henüz işlem yapılmadı.")
+    else:
+        for trade in reversed(trades):
+            side = str(trade.get("side", "-"))
+            pnl = safe_float(trade.get("pnl"))
+            pnl_class = "positive" if pnl >= 0 else "negative"
+            timestamp = str(trade.get("time", "")).replace("T", " ")[:19]
+            st.markdown(
+                f"""
+                <div class="nova-card yeb-journal-card">
+                    <div class="yeb-journal-top">
+                        <div><div class="yeb-journal-symbol">{escape(str(trade.get('symbol', '-')))} · {escape(side)}</div>
+                        <div class="nova-card-note">{escape(timestamp)} · {escape(str(trade.get('reason', 'Sanal alış')))}</div></div>
+                        <div class="yeb-journal-pnl {pnl_class}">{'₺' + format_number(pnl) if side == 'SAT' else 'ALIM'}</div>
+                    </div>
+                    <div class="yeb-journal-grid">
+                        <div><span>Lot</span><strong>{escape(str(trade.get('quantity', 0)))}</strong></div>
+                        <div><span>İşlem fiyatı</span><strong>₺{format_number(safe_float(trade.get('price')))}</strong></div>
+                        <div><span>Toplam tutar</span><strong>₺{format_number(safe_float(trade.get('total')))}</strong></div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("#### Geçmiş Haftalar")
+    archives = list(simulation.get("archives", []))
+    if not archives:
+        st.caption("İlk hafta tamamlandığında haftalık performans özeti burada görünecek.")
+    else:
+        for archive in reversed(archives):
+            archive_pnl = safe_float(archive.get("pnl"))
+            archive_class = "positive" if archive_pnl >= 0 else "negative"
+            st.markdown(
+                f"""
+                <div class="nova-card yeb-journal-card">
+                    <div class="yeb-journal-top">
+                        <div><div class="yeb-journal-symbol">{escape(str(archive.get('week', '-')))}</div>
+                        <div class="nova-card-note">{escape(str(archive.get('trade_count', 0)))} işlem</div></div>
+                        <div class="yeb-journal-pnl {archive_class}">%{safe_float(archive.get('pnl_pct')):+.2f}</div>
+                    </div>
+                    <div class="yeb-journal-grid">
+                        <div><span>Hafta sonu değer</span><strong>₺{format_number(safe_float(archive.get('ending_value')))}</strong></div>
+                        <div><span>Haftalık K/Z</span><strong>₺{format_number(archive_pnl)}</strong></div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.caption(DISCLAIMER)
+
+
 def render_yeb_pro_page() -> None:
     if not has_pro_access():
         render_pro_locked_page()
@@ -3603,6 +3909,8 @@ def render_yeb_pro_page() -> None:
         render_pro_sell_page()
     elif module == "Pozisyon Takibi":
         render_pro_positions_page()
+    elif module == "Simülasyon":
+        render_pro_simulation_page()
     elif module == "Trade Journal":
         render_trade_journal_page()
     elif module == "Bildirimler":
