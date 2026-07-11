@@ -2034,6 +2034,15 @@ def render_scanner_stock_summary(symbol: str) -> None:
     """Public hand-off view opened from a Smart Scanner symbol link."""
     data = load_market_data(symbol, DEFAULT_PERIOD_LABEL)
     latest = data.iloc[-1]
+    spot_quote = load_live_spot_quote(symbol)
+    live_price = float(spot_quote["price"]) if spot_quote else safe_float(latest["Close"])
+    live_change = (
+        float(spot_quote["change_pct"])
+        if spot_quote
+        else safe_float(latest.get("DAILY_CHANGE_PCT"))
+    )
+    change_class = "nova-price-up" if live_change >= 0 else "nova-price-down"
+    change_prefix = "+" if live_change >= 0 else ""
     score, _ = calculate_general_score(latest)
     confidence = nova_confidence_index(latest)
     support_level, resistance_level = support_resistance(data)
@@ -2041,7 +2050,22 @@ def render_scanner_stock_summary(symbol: str) -> None:
         latest, score, confidence, support_level, resistance_level
     )
 
-    st.markdown(f"## {escape(symbol)}")
+    st.markdown(
+        f"""
+        <div class="nova-selected-asset">
+            <div class="nova-selected-identity">
+                <div class="nova-selected-symbol">{escape(symbol)}</div>
+                <div class="nova-selected-name">Canlı piyasa görünümü</div>
+            </div>
+            <div class="nova-selected-price">
+                <span>Anlık fiyat</span>
+                <strong>₺{format_number(live_price)}</strong>
+                <b class="{change_class}">{change_prefix}{live_change:.2f}%</b>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("#### Vade Senaryoları")
     render_trade_horizon_cards(trade_table)
     selected_horizon = st.radio(
