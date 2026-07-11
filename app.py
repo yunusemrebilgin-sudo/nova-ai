@@ -1305,8 +1305,12 @@ def render_trade_horizon_cards(trade_table: pd.DataFrame) -> None:
             )
 
 
-def render_pro_follow_window_detail(selected_horizon: str, selected_trade_row: pd.Series) -> None:
-    if not st.session_state.get("yeb_pro_active", False):
+def render_pro_follow_window_detail(
+    selected_horizon: str,
+    selected_trade_row: pd.Series,
+    force: bool = False,
+) -> None:
+    if not force and not st.session_state.get("yeb_pro_active", False):
         return
 
     holding_period = str(selected_trade_row["Beklenen Taşıma Süresi"])
@@ -2023,6 +2027,38 @@ def render_scanner_stock_dialog(symbol: str) -> None:
             use_container_width=True,
             on_click=close_scanner_stock_dialog,
         )
+    st.caption(DISCLAIMER)
+
+
+def render_scanner_stock_summary(symbol: str) -> None:
+    """Public hand-off view opened from a Smart Scanner symbol link."""
+    data = load_market_data(symbol, DEFAULT_PERIOD_LABEL)
+    latest = data.iloc[-1]
+    score, _ = calculate_general_score(latest)
+    confidence = nova_confidence_index(latest)
+    support_level, resistance_level = support_resistance(data)
+    trade_table = build_trade_horizon_table(
+        latest, score, confidence, support_level, resistance_level
+    )
+
+    st.markdown(f"## {escape(symbol)}")
+    st.markdown("#### Vade Senaryoları")
+    render_trade_horizon_cards(trade_table)
+    selected_horizon = st.radio(
+        "AI takip vadesi",
+        TRADE_HORIZONS,
+        horizontal=True,
+        key=f"scanner_summary_horizon_{symbol}",
+    )
+    selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
+    render_pro_follow_window_detail(selected_horizon, selected_trade_row, force=True)
+    st.button(
+        "Dashboard'ta detaylı aç",
+        type="primary",
+        use_container_width=True,
+        on_click=open_symbol_in_dashboard,
+        args=(symbol,),
+    )
     st.caption(DISCLAIMER)
 
 
@@ -3555,6 +3591,10 @@ def render_page(page: str) -> None:
     if page == PUBLIC_DASHBOARD_PAGE:
         render_dashboard_page()
     elif page == SMART_SCANNER_PAGE:
+        requested_symbol = str(st.query_params.get("scanner_detail", "")).strip().upper()
+        if requested_symbol:
+            render_scanner_stock_summary(requested_symbol)
+            return
         if not is_authenticated() and not render_login_page():
             return
         render_smart_scanner_page()
