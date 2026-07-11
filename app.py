@@ -3672,6 +3672,31 @@ def close_simulation_position(
     })
 
 
+def render_simulation_table(headers: list[str], rows: list[list[str]], height: int = 420) -> None:
+    header_html = "".join(f"<th>{escape(header)}</th>" for header in headers)
+    row_html = "".join(
+        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    components.html(
+        f"""
+        <style>
+          body {{ margin:0; background:transparent; color:#e8eef9; font-family:Inter,system-ui,sans-serif }}
+          .wrap {{ overflow:auto; border:1px solid #20324f; border-radius:14px; background:#081324 }}
+          table {{ width:100%; min-width:760px; border-collapse:collapse }}
+          th {{ position:sticky; top:0; z-index:1; padding:12px 14px; text-align:left; color:#8fa4c3; background:#0d1a30; border-bottom:1px solid #29405f; font-size:11px; letter-spacing:.45px; text-transform:uppercase }}
+          td {{ padding:13px 14px; border-bottom:1px solid #172a46; font-size:13px; white-space:nowrap }}
+          tr:last-child td {{ border-bottom:0 }} tr:hover td {{ background:#0e1e35 }}
+          .symbol {{ color:#f4f8ff; font-weight:800 }} .positive {{ color:#34d399; font-weight:800 }} .negative {{ color:#fb7185; font-weight:800 }} .muted {{ color:#8fa4c3 }}
+          @media(max-width:700px) {{ th,td {{ padding:11px 10px; font-size:11px }} }}
+        </style>
+        <div class="wrap"><table><thead><tr>{header_html}</tr></thead><tbody>{row_html}</tbody></table></div>
+        """,
+        height=min(height, 86 + (len(rows) * 48)),
+        scrolling=True,
+    )
+
+
 def render_pro_simulation_page() -> None:
     load_current_user_pro_data()
     simulation = ensure_weekly_simulation()
@@ -3793,6 +3818,7 @@ def render_pro_simulation_page() -> None:
     if not positions:
         st.info("Henüz sanal pozisyon yok.")
     else:
+        position_rows: list[list[str]] = []
         for position in positions:
             position_symbol = str(position["symbol"])
             current_price, daily_change = quote_map[position_symbol]
@@ -3803,24 +3829,16 @@ def render_pro_simulation_page() -> None:
             pnl_class = "positive" if pnl >= 0 else "negative"
             stop_value = safe_float(position.get("stop_price"))
             target_value = safe_float(position.get("target_price"))
-            st.markdown(
-                f"""
-                <div class="nova-card yeb-journal-card">
-                    <div class="yeb-journal-top">
-                        <div><div class="yeb-journal-symbol">{escape(position_symbol)}</div>
-                        <div class="nova-card-note">{position_qty} lot · Ort. alış ₺{format_number(avg_price)}</div></div>
-                        <div class="yeb-journal-pnl {pnl_class}">%{pnl_pct:+.2f}<br><small>₺{format_number(pnl)}</small></div>
-                    </div>
-                    <div class="yeb-journal-grid">
-                        <div><span>Güncel fiyat</span><strong>₺{format_number(current_price)}</strong></div>
-                        <div><span>Günlük değişim</span><strong>%{daily_change:+.2f}</strong></div>
-                        <div><span>Stop loss emri</span><strong>₺{format_number(stop_value)}</strong></div>
-                        <div><span>Hedef satış emri</span><strong>₺{format_number(target_value)}</strong></div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            position_rows.append([
+                f'<span class="symbol">{escape(position_symbol)}</span>', str(position_qty),
+                f"₺{format_number(avg_price)}", f"₺{format_number(current_price)}",
+                f'<span class="{pnl_class}">%{pnl_pct:+.2f} · ₺{format_number(pnl)}</span>',
+                f"₺{format_number(stop_value)}", f"₺{format_number(target_value)}",
+            ])
+        render_simulation_table(
+            ["Hisse", "Lot", "Ort. Alış", "Güncel", "Anlık K/Z", "Stop", "Hedef"],
+            position_rows,
+        )
         sell_options = [str(position["symbol"]) for position in positions]
         sell_col, sell_action_col = st.columns([1.5, 0.7])
         with sell_col:
@@ -3839,28 +3857,48 @@ def render_pro_simulation_page() -> None:
     if not trades:
         st.caption("Bu hafta henüz işlem yapılmadı.")
     else:
+        history_rows: list[list[str]] = []
         for trade in reversed(trades):
             side = str(trade.get("side", "-"))
             pnl = safe_float(trade.get("pnl"))
             pnl_class = "positive" if pnl >= 0 else "negative"
             timestamp = str(trade.get("time", "")).replace("T", " ")[:19]
-            st.markdown(
-                f"""
-                <div class="nova-card yeb-journal-card">
-                    <div class="yeb-journal-top">
-                        <div><div class="yeb-journal-symbol">{escape(str(trade.get('symbol', '-')))} · {escape(side)}</div>
-                        <div class="nova-card-note">{escape(timestamp)} · {escape(str(trade.get('reason', 'Sanal alış')))}</div></div>
-                        <div class="yeb-journal-pnl {pnl_class}">{'₺' + format_number(pnl) if side == 'SAT' else 'ALIM'}</div>
-                    </div>
-                    <div class="yeb-journal-grid">
-                        <div><span>Lot</span><strong>{escape(str(trade.get('quantity', 0)))}</strong></div>
-                        <div><span>İşlem fiyatı</span><strong>₺{format_number(safe_float(trade.get('price')))}</strong></div>
-                        <div><span>Toplam tutar</span><strong>₺{format_number(safe_float(trade.get('total')))}</strong></div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            history_rows.append([
+                f'<span class="symbol">{escape(str(trade.get("symbol", "-")))}</span>',
+                escape(side), escape(str(trade.get("quantity", 0))),
+                f"₺{format_number(safe_float(trade.get('price')))}",
+                f"₺{format_number(safe_float(trade.get('total')))}",
+                f'<span class="{pnl_class}">{"₺" + format_number(pnl) if side == "SAT" else "—"}</span>',
+                escape(str(trade.get("reason", "Sanal alış"))), escape(timestamp),
+            ])
+        render_simulation_table(
+            ["Hisse", "İşlem", "Lot", "Fiyat", "Tutar", "Gerçekleşen K/Z", "Neden", "Zaman"],
+            history_rows,
+        )
+
+    buy_trades = [trade for trade in trades if str(trade.get("side")) == "AL"]
+    if buy_trades:
+        st.markdown("#### Her Alımın Anlık Bilançosu")
+        purchase_rows: list[list[str]] = []
+        for trade in reversed(buy_trades):
+            trade_symbol = str(trade.get("symbol", ""))
+            trade_price = safe_float(trade.get("price"))
+            trade_qty = int(trade.get("quantity", 0))
+            current_price = quote_map[trade_symbol][0] if trade_symbol in quote_map else simulation_quote(trade_symbol)[0]
+            purchase_pnl = (current_price - trade_price) * trade_qty
+            purchase_pct = ((current_price / trade_price) - 1) * 100 if trade_price else 0.0
+            purchase_class = "positive" if purchase_pnl >= 0 else "negative"
+            purchase_rows.append([
+                f'<span class="symbol">{escape(trade_symbol)}</span>', str(trade_qty),
+                f"₺{format_number(trade_price)}", f"₺{format_number(current_price)}",
+                f"₺{format_number(safe_float(trade.get('total')))}",
+                f'<span class="{purchase_class}">%{purchase_pct:+.2f} · ₺{format_number(purchase_pnl)}</span>',
+                escape(str(trade.get("time", "")).replace("T", " ")[:19]),
+            ])
+        render_simulation_table(
+            ["Hisse", "Lot", "Alış", "Güncel", "Yatırılan", "Anlık Bilanço", "Alım Zamanı"],
+            purchase_rows,
+        )
 
     st.markdown("#### Geçmiş Haftalar")
     archives = list(simulation.get("archives", []))
