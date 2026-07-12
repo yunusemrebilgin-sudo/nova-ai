@@ -144,6 +144,7 @@ def load_simulation(username: str) -> dict[str, Any]:
     if supabase_enabled():
         normalized = normalize_username(username)
         try:
+            _rest("rpc/rollover_simulation_weeks", "POST", payload={})
             accounts = _rest("simulation_accounts", params={"username": f"eq.{normalized}", "select": "*"}).json()
             if not accounts:
                 return {}
