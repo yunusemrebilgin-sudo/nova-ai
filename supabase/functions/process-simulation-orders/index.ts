@@ -31,28 +31,15 @@ Deno.serve(async () => {
       if (!price) continue;
       priceCache.set(position.symbol, price);
     }
-    await supabase.from("simulation_positions").update({ last_price: price, updated_at: new Date().toISOString() }).eq("id", position.id);
-    const reason = price <= Number(position.stop_price)
-      ? "Stop loss emri"
-      : price >= Number(position.target_price)
-      ? "Hedef satış emri"
-      : null;
-    if (!reason) continue;
-
-    const proceeds = Number((price * position.quantity).toFixed(2));
-    const pnl = Number(((price - Number(position.avg_price)) * position.quantity).toFixed(2));
-    const { data: account } = await supabase.from("simulation_accounts").select("cash").eq("username", position.username).single();
-    const { error: cashError } = await supabase.from("simulation_accounts")
-      .update({ cash: Number(account.cash) + proceeds, updated_at: new Date().toISOString() })
-      .eq("username", position.username);
-    if (cashError) continue;
-    await supabase.from("simulation_trades").insert({
-      username: position.username, week_key: position.week_key, side: "SAT",
-      symbol: position.symbol, quantity: position.quantity, price,
-      total: proceeds, realized_pnl: pnl, reason,
+    const { data: result, error: saleError } = await supabase.rpc("execute_simulation_sale", {
+      p_position_id: position.id,
+      p_market_price: price,
     });
-    await supabase.from("simulation_positions").delete().eq("id", position.id);
-    executed.push({ username: position.username, symbol: position.symbol, price, reason });
+    if (saleError) {
+      console.error("simulation sale failed", { positionId: position.id, message: saleError.message });
+      continue;
+    }
+    if (result?.executed) executed.push(result);
   }
   return Response.json({ checked: positions?.length ?? 0, executed });
 });

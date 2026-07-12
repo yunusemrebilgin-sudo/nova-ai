@@ -27,6 +27,10 @@ SUPABASE_URL = ""
 SUPABASE_SERVICE_ROLE_KEY = ""
 
 
+class PersistenceError(RuntimeError):
+    """Raised when live user data cannot be read from or written to Supabase."""
+
+
 def configure_supabase(url: str, service_role_key: str) -> None:
     global SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
     SUPABASE_URL = str(url).strip().rstrip("/")
@@ -156,8 +160,8 @@ def load_simulation(username: str) -> dict[str, Any]:
                 "trades": [{"side": t["side"], "symbol": t["symbol"], "quantity": t["quantity"], "price": float(t["price"]), "total": float(t["total"]), "pnl": float(t["realized_pnl"] or 0), "reason": t["reason"], "time": t["executed_at"]} for t in trades],
                 "archives": [{"week": a["week_key"], "ending_value": float(a["ending_value"]), "pnl": float(a["pnl"]), "pnl_pct": float(a["pnl_pct"]), "trade_count": a["trade_count"], "closed_at": a["closed_at"]} for a in archives],
             }
-        except (requests.RequestException, KeyError, TypeError, ValueError):
-            pass
+        except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+            raise PersistenceError("Simülasyon verileri Supabase'den okunamadı.") from exc
     path = user_data_dir(username) / "simulation.json"
     if not path.exists():
         return {}
@@ -185,8 +189,8 @@ def save_simulation(username: str, simulation: dict[str, Any]) -> None:
             for archive in simulation.get("archives", []):
                 _rest("simulation_weekly_summaries", "POST", payload={"username": normalized, "week_key": archive["week"], "ending_value": archive["ending_value"], "pnl": archive["pnl"], "pnl_pct": archive["pnl_pct"], "trade_count": archive.get("trade_count", 0), "closed_at": archive.get("closed_at")}, prefer="resolution=merge-duplicates")
             return
-        except (requests.RequestException, KeyError, TypeError, ValueError):
-            pass
+        except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+            raise PersistenceError("Simülasyon işlemi Supabase'e kaydedilemedi.") from exc
     path = user_data_dir(username) / "simulation.json"
     path.write_text(
         json.dumps(simulation, ensure_ascii=False, indent=2),

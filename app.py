@@ -215,7 +215,11 @@ def load_current_user_pro_data() -> None:
     else:
         st.session_state.yeb_ai_watchlist = []
     simulation_loader = getattr(user_store, "load_simulation", None)
-    st.session_state.yeb_simulation = simulation_loader(username) if callable(simulation_loader) else {}
+    try:
+        st.session_state.yeb_simulation = simulation_loader(username) if callable(simulation_loader) else {}
+    except user_store.PersistenceError:
+        st.error("Simülasyon verilerine şu anda ulaşılamıyor. Güvenliğiniz için işlem ekranı durduruldu; lütfen biraz sonra tekrar deneyin.")
+        st.stop()
     st.session_state.yeb_data_user = username
 
 
@@ -233,7 +237,11 @@ def save_current_user_pro_data() -> None:
         user_store.save_user_list(username, "ai_watchlist.json", watchlist)
     simulation_saver = getattr(user_store, "save_simulation", None)
     if callable(simulation_saver):
-        simulation_saver(username, st.session_state.get("yeb_simulation", {}))
+        try:
+            simulation_saver(username, st.session_state.get("yeb_simulation", {}))
+        except user_store.PersistenceError:
+            st.error("İşlem Supabase'e kaydedilemedi. İşlem tamamlanmış sayılmadı; lütfen bağlantı düzeldikten sonra tekrar deneyin.")
+            st.stop()
     st.session_state.yeb_data_user = username
 
 
