@@ -30,6 +30,7 @@ def _scan_row(
     expected_return = analytics.expected_return(latest, resistance, selected_horizon)
     news_impact = news.news_impact_percent(symbol, name)
     news_adjusted_return = round(max(1.0, min(35.0, expected_return + news_impact)), 1)
+    portfolio_price_series = raw_data["Close"].dropna().astype(float).tolist()
     return {
         "Hisse": symbol,
         "Şirket": name,
@@ -51,6 +52,8 @@ def _scan_row(
         "Son Fiyat": round(float(latest["Close"]), 2),
         "Destek": round(support, 2),
         "Direnç": round(resistance, 2),
+        # Hidden integration metadata: reuses the scan's existing price evidence.
+        "_portfolio_price_series": portfolio_price_series,
     }
 
 

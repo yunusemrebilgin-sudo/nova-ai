@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import re
 import requests
 import streamlit as st
@@ -19,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 import analytics as nova_analytics
 import decision_center as nova_decision
+import portfolio as nova_portfolio
 import scanner as nova_scanner
 import user_store
 from theme import apply_terminal_theme, init_theme_state, set_theme_from_toggle, theme_tokens
@@ -78,10 +80,12 @@ TIMEFRAME_WINDOWS = {
 
 PUBLIC_DASHBOARD_PAGE = "Dashboard"
 SMART_SCANNER_PAGE = "🔐 Smart Scanner"
+PORTFOLIOS_PAGE = "Portföyler"
 YEB_PRO_PAGE = "⭐ YEB PRO"
 PAGES = [
     PUBLIC_DASHBOARD_PAGE,
     SMART_SCANNER_PAGE,
+    PORTFOLIOS_PAGE,
     YEB_PRO_PAGE,
 ]
 PRO_MODULES = [
@@ -347,6 +351,7 @@ def render_top_navigation() -> str:
     navigation_labels = {
         PUBLIC_DASHBOARD_PAGE: "Dashboard",
         SMART_SCANNER_PAGE: "Smart Scanner",
+        PORTFOLIOS_PAGE: "Portföyler",
         YEB_PRO_PAGE: "YEB PRO",
     }
     return st.radio(
@@ -3010,6 +3015,144 @@ def render_coming_soon_page(page: str) -> None:
     )
 
 
+PORTFOLIO_HORIZON_MAP = {
+    "1-5 gün": "daily", "5-10 gün": "weekly", "10-30 gün": "monthly",
+    "1-2 ay": "quarterly", "2-4 ay": "quarterly",
+}
+
+
+def _portfolio_downside_deviation(prices: list[float]) -> float | None:
+    returns = [prices[i] / prices[i - 1] - 1.0 for i in range(1, len(prices)) if prices[i - 1] > 0]
+    downside = [value for value in returns if value < 0]
+    if not downside:
+        return 0.0 if returns else None
+    mean = sum(downside) / len(downside)
+    return (sum((value - mean) ** 2 for value in downside) / len(downside)) ** 0.5 * 100.0
+
+
+def prepare_portfolio_scanner_candidates(scanner_table: pd.DataFrame, symbol_sectors: dict[str, str]) -> list[dict[str, object]]:
+    """Adapt scanner rows using price evidence captured during the scan."""
+    prepared = []
+    for scanner_row in scanner_table.to_dict(orient="records"):
+        symbol = str(scanner_row.get("Hisse", "")).strip().upper()
+        if not symbol:
+            continue
+        embedded_prices = scanner_row.get("_portfolio_price_series", [])
+        close_values = [float(value) for value in embedded_prices if pd.notna(value)] if isinstance(embedded_prices, list) else []
+        prepared.append({
+            **scanner_row, "symbol": symbol, "sector": symbol_sectors.get(symbol, ""),
+            "ai_confidence": scanner_row.get("AI Güven Endeksi"),
+            "expected_return": scanner_row.get("Beklenen Getiri %"),
+            "risk_score": scanner_row.get("Sat Riski %"), "sell_risk": scanner_row.get("Sat Riski %"),
+            "volatility": scanner_row.get("Volatilite"),
+            "downside_deviation": _portfolio_downside_deviation(close_values),
+            "price_series": close_values, "eligible": True,
+        })
+    return prepared
+
+
+def portfolio_results_cache_key(scanner_table: pd.DataFrame, parameters: tuple[object, ...]) -> str:
+    payload = scanner_table.to_json(orient="split", date_format="iso", default_handler=str)
+    payload += "|" + "|".join(str(value) for value in parameters)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _portfolio_display_number(value: object, decimals: int = 2) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if not math.isfinite(numeric):
+        return "-"
+    return f"{numeric:.{decimals}f}"
+
+
+def render_portfolio_ranked_results(results: dict[str, object], ui=st) -> bool:
+    ranked = list(results.get("ranked_candidates", []))
+    if not ranked:
+        ui.info("Seçilen kriterlere uygun portföy adayı bulunamadı.")
+        return False
+    for item in ranked:
+        metrics, pci = item.get("optimizer_metrics", {}), item.get("pci", {})
+        facts = pci.get("explanation_facts", {})
+        symbols = ", ".join(escape(str(value)) for value in item.get("symbols", []))
+        weights = " · ".join(f"{escape(str(k))} %{float(v) * 100:.1f}" for k, v in item.get("weights", {}).items())
+        warning_items = pci.get("warnings", [])
+        warning_text = "Yok" if not warning_items else " · ".join(
+            escape(str(w.get("explanation") or w.get("warning_code", "Uyarı"))) for w in warning_items[:3]
+        )
+        ui.markdown(f"""
+        <div class="nova-card" style="margin-bottom:14px">
+          <div class="nova-card-title" style="overflow-wrap:anywhere">#{int(item.get('rank', 0))} · {symbols}</div>
+          <div class="nova-card-note">{weights}</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-top:14px">
+            <div><small>PCI</small><br><strong>{_portfolio_display_number(metrics.get('portfolio_confidence_index'), 1)}</strong></div>
+            <div><small>Beklenen Getiri</small><br><strong>%{_portfolio_display_number(metrics.get('weighted_expected_return'))}</strong></div>
+            <div><small>Risk Skoru</small><br><strong>{_portfolio_display_number(metrics.get('weighted_risk_score'))}</strong></div>
+            <div><small>Ortalama Korelasyon</small><br><strong>{_portfolio_display_number(metrics.get('average_correlation'))}</strong></div>
+            <div><small>Maks. Çift Korelasyonu</small><br><strong>{_portfolio_display_number(metrics.get('maximum_pair_correlation'))}</strong></div>
+            <div><small>Baskın Sektör</small><br><strong>{escape(str(facts.get('dominant_sector') or '-'))}</strong></div>
+            <div><small>En Yüksek Risk Katkısı</small><br><strong>{escape(str(facts.get('highest_risk_contribution_stock') or '-'))}</strong></div>
+          </div>
+          <div class="nova-card-note" style="margin-top:12px">Uyarılar: {warning_text}</div>
+        </div>""", unsafe_allow_html=True)
+    return True
+
+
+def render_portfolios_page() -> None:
+    st.title("Portföy Adayları")
+    st.markdown('<div class="nova-subtitle">Mevcut tarama sonuçlarından çeşitlendirme, risk dağılımı ve güven metrikleriyle oluşturulan karar destek adaylarıdır.</div>', unsafe_allow_html=True)
+    scanner_table = normalize_smart_scanner_table(st.session_state.get("smart_scanner_results", pd.DataFrame()))
+    if scanner_table.empty:
+        st.info("Önce Smart Scanner çalıştırılmalıdır. Portföy ekranı yeni bir piyasa taraması başlatmaz.")
+        return
+    if "_portfolio_price_series" not in scanner_table.columns:
+        st.info("Mevcut tarama sonucu fiyat kanıtı içermiyor. Smart Scanner sayfasında piyasayı bir kez yeniden tarayın.")
+        return
+    col_1, col_2, col_3 = st.columns(3)
+    with col_1:
+        portfolio_size = st.selectbox("Portföy büyüklüğü", [4, 5, 6], key="portfolio_asset_count")
+        result_count = st.selectbox("Gösterilecek sonuç", [5, 10, 20], key="portfolio_result_count")
+    with col_2:
+        min_pci = st.number_input("Minimum PCI", 0.0, 100.0, 0.0, 1.0, key="portfolio_min_pci")
+        max_risk = st.number_input("Maksimum risk skoru", 0.0, 100.0, 100.0, 1.0, key="portfolio_max_risk")
+    with col_3:
+        min_return = st.number_input("Minimum beklenen getiri", -100.0, 100.0, -100.0, 1.0, key="portfolio_min_expected_return")
+        st.caption("Hesaplama yalnızca butona basıldığında çalışır.")
+    horizon = "daily"
+    st.caption("Bu ilk sürüm, Smart Scanner sırasında hazırlanan 6 aylık günlük fiyat kanıtını kullanır.")
+    parameters = (portfolio_size, result_count, min_pci, max_risk, min_return, horizon)
+    cache_key = portfolio_results_cache_key(scanner_table, parameters)
+    if st.button("Portföyleri Oluştur", type="primary", key="build_portfolio_results"):
+        try:
+            if st.session_state.get("portfolio_results_cache_key") != cache_key:
+                symbols = load_bist_symbols()
+                sector_map = dict(zip(symbols["symbol"], symbols["sector"]))
+                source_rows = prepare_portfolio_scanner_candidates(scanner_table.head(25), sector_map)
+                with st.spinner("Portföy adayları hesaplanıyor..."):
+                    results = nova_portfolio.build_ranked_portfolio_results(
+                        source_rows[:12], horizon, portfolio_size=int(portfolio_size), top_n=int(result_count),
+                        min_pci=float(min_pci), max_risk_score=float(max_risk), min_expected_return=float(min_return),
+                        max_combinations=1500, reference_universe=source_rows,
+                    )
+                st.session_state.portfolio_ranked_results = results
+                st.session_state.portfolio_results_cache_key = cache_key
+        except Exception:
+            st.error("Portföy adayları güvenli şekilde oluşturulamadı. Scanner verisini kontrol edip tekrar deneyin.")
+    results = (
+        st.session_state.get("portfolio_ranked_results")
+        if st.session_state.get("portfolio_results_cache_key") == cache_key
+        else None
+    )
+    if results:
+        render_portfolio_ranked_results(results)
+        summary = results.get("rejection_summary", {})
+        st.caption(f"Geçerli sonuç: {len(results.get('ranked_candidates', []))} · Elenen: {summary.get('input_or_sector_rejections', 0) + summary.get('optimizer_filtered_count', 0)} · Servis uyarısı: {len(results.get('warnings', []))}")
+    else:
+        st.info("Kontrolleri seçip Portföyleri Oluştur butonuna basın.")
+    st.caption(DECISION_SUPPORT_DISCLAIMER)
+
+
 def render_login_page() -> bool:
     st.title("Smart Scanner Girişi")
     st.markdown(
@@ -4092,6 +4235,10 @@ def render_page(page: str) -> None:
         if not is_authenticated() and not render_login_page():
             return
         render_smart_scanner_page()
+    elif page == PORTFOLIOS_PAGE:
+        if not is_authenticated() and not render_login_page():
+            return
+        render_portfolios_page()
     elif page == YEB_PRO_PAGE:
         render_yeb_pro_page()
     else:
