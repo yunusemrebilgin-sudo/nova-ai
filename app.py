@@ -132,6 +132,8 @@ def init_access_state() -> None:
         st.session_state.yeb_pro_active = False
     if "yeb_data_user" not in st.session_state:
         st.session_state.yeb_data_user = ""
+    if "yeb_persistent_data_loaded" not in st.session_state:
+        st.session_state.yeb_persistent_data_loaded = False
     if "yeb_open_positions" not in st.session_state:
         st.session_state.yeb_open_positions = []
     if "yeb_closed_trades" not in st.session_state:
@@ -184,6 +186,7 @@ def restore_persistent_session() -> None:
     st.session_state.auth_user = restored["username"]
     st.session_state.yeb_pro_active = bool(restored["is_pro"])
     st.session_state.yeb_data_user = ""
+    st.session_state.yeb_persistent_data_loaded = False
 
 
 def is_authenticated() -> bool:
@@ -207,45 +210,50 @@ def load_current_user_pro_data() -> None:
     except Exception:
         pass
     username = current_auth_user()
-    if not username or st.session_state.get("yeb_data_user") == username:
+    if not username or (
+        st.session_state.get("yeb_data_user") == username
+        and st.session_state.get("yeb_persistent_data_loaded", False)
+    ):
         return
-    st.session_state.yeb_open_positions = user_store.load_open_positions(username)
-    st.session_state.yeb_closed_trades = user_store.load_closed_trades(username)
-    watchlist_loader = getattr(user_store, "load_ai_watchlist", None)
-    if callable(watchlist_loader):
-        st.session_state.yeb_ai_watchlist = watchlist_loader(username)
-    elif callable(getattr(user_store, "load_user_list", None)):
-        st.session_state.yeb_ai_watchlist = user_store.load_user_list(username, "ai_watchlist.json")
-    else:
-        st.session_state.yeb_ai_watchlist = []
     simulation_loader = getattr(user_store, "load_simulation", None)
     try:
-        st.session_state.yeb_simulation = simulation_loader(username) if callable(simulation_loader) else {}
+        portfolio_data = user_store.load_user_portfolio_data(username)
+        simulation_data = simulation_loader(username) if callable(simulation_loader) else {}
     except user_store.PersistenceError:
-        st.error("Simülasyon verilerine şu anda ulaşılamıyor. Güvenliğiniz için işlem ekranı durduruldu; lütfen biraz sonra tekrar deneyin.")
+        st.session_state.yeb_data_user = ""
+        st.session_state.yeb_persistent_data_loaded = False
+        st.error("Kalıcı kullanıcı verilerine şu anda ulaşılamıyor. Mevcut kayıtların korunması için işlem ekranı durduruldu; lütfen biraz sonra tekrar deneyin.")
         st.stop()
+    st.session_state.yeb_open_positions = portfolio_data["open_positions"]
+    st.session_state.yeb_closed_trades = portfolio_data["closed_trades"]
+    st.session_state.yeb_ai_watchlist = portfolio_data["ai_watchlist"]
+    st.session_state.yeb_simulation = simulation_data
     st.session_state.yeb_data_user = username
+    st.session_state.yeb_persistent_data_loaded = True
 
 
 def save_current_user_pro_data() -> None:
     username = current_auth_user()
     if not username:
         return
-    user_store.save_open_positions(username, st.session_state.get("yeb_open_positions", []))
-    user_store.save_closed_trades(username, st.session_state.get("yeb_closed_trades", []))
-    watchlist = st.session_state.get("yeb_ai_watchlist", [])
-    watchlist_saver = getattr(user_store, "save_ai_watchlist", None)
-    if callable(watchlist_saver):
-        watchlist_saver(username, watchlist)
-    elif callable(getattr(user_store, "save_user_list", None)):
-        user_store.save_user_list(username, "ai_watchlist.json", watchlist)
-    simulation_saver = getattr(user_store, "save_simulation", None)
-    if callable(simulation_saver):
-        try:
+    if not st.session_state.get("yeb_persistent_data_loaded", False):
+        st.error("Kalıcı veriler başarıyla yüklenmeden kayıt yapılamaz.")
+        st.stop()
+    try:
+        user_store.save_user_portfolio_data(
+            username,
+            st.session_state.get("yeb_open_positions", []),
+            st.session_state.get("yeb_closed_trades", []),
+            st.session_state.get("yeb_ai_watchlist", []),
+        )
+        simulation_saver = getattr(user_store, "save_simulation", None)
+        if callable(simulation_saver):
             simulation_saver(username, st.session_state.get("yeb_simulation", {}))
-        except user_store.PersistenceError:
-            st.error("İşlem Supabase'e kaydedilemedi. İşlem tamamlanmış sayılmadı; lütfen bağlantı düzeldikten sonra tekrar deneyin.")
-            st.stop()
+    except user_store.PersistenceError:
+        st.session_state.yeb_data_user = ""
+        st.session_state.yeb_persistent_data_loaded = False
+        st.error("İşlem kalıcı veri deposuna kaydedilemedi. Mevcut kayıtların üzerine boş veri yazılmadı; lütfen bağlantı düzeldikten sonra tekrar deneyin.")
+        st.stop()
     st.session_state.yeb_data_user = username
 
 
@@ -254,6 +262,7 @@ def logout_current_user() -> None:
     st.session_state.auth_user = ""
     st.session_state.yeb_pro_active = False
     st.session_state.yeb_data_user = ""
+    st.session_state.yeb_persistent_data_loaded = False
     st.session_state.yeb_open_positions = []
     st.session_state.yeb_closed_trades = []
     st.session_state.yeb_ai_watchlist = []
@@ -3180,6 +3189,7 @@ def render_login_page() -> bool:
         st.session_state.auth_user = user["username"]
         st.session_state.yeb_pro_active = bool(user["is_pro"])
         st.session_state.yeb_data_user = ""
+        st.session_state.yeb_persistent_data_loaded = False
         COOKIE_MANAGER.set(
             AUTH_COOKIE_NAME,
             create_auth_session_token(user["username"]),

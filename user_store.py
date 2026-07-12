@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import requests
@@ -29,6 +30,13 @@ SUPABASE_SERVICE_ROLE_KEY = ""
 
 class PersistenceError(RuntimeError):
     """Raised when live user data cannot be read from or written to Supabase."""
+
+
+EMPTY_PORTFOLIO_DATA = {
+    "open_positions": [],
+    "closed_trades": [],
+    "ai_watchlist": [],
+}
 
 
 def configure_supabase(url: str, service_role_key: str) -> None:
@@ -94,50 +102,140 @@ def user_data_dir(username: str) -> Path:
     return path
 
 
+def _validate_list_payload(value: Any, field_name: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise PersistenceError(f"{field_name} verisi geçerli bir liste değil.")
+    return [dict(item) for item in value]
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary_path = Path(handle.name)
+        os.replace(temporary_path, path)
+    except (OSError, TypeError, ValueError) as exc:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise PersistenceError("Kullanıcı verisi atomik olarak kaydedilemedi.") from exc
+
+
 def load_user_list(username: str, file_name: str) -> list[dict[str, Any]]:
     path = user_data_dir(username) / file_name
     if not path.exists():
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, dict)]
+    except (json.JSONDecodeError, OSError) as exc:
+        raise PersistenceError(f"{file_name} okunamadı; mevcut veri korunuyor.") from exc
+    return _validate_list_payload(data, file_name)
 
 
 def save_user_list(username: str, file_name: str, rows: list[dict[str, Any]]) -> None:
     path = user_data_dir(username) / file_name
-    path.write_text(
-        json.dumps(rows, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _atomic_write_json(path, _validate_list_payload(rows, file_name))
+
+
+def load_user_portfolio_data(username: str) -> dict[str, list[dict[str, Any]]]:
+    normalized = normalize_username(username)
+    if normalized not in USERS:
+        raise ValueError("Tanımsız kullanıcı.")
+    if supabase_enabled():
+        try:
+            rows = _rest(
+                "user_portfolio_data",
+                params={"username": f"eq.{normalized}", "select": "open_positions,closed_trades,ai_watchlist"},
+            ).json()
+            if not rows:
+                return {key: [] for key in EMPTY_PORTFOLIO_DATA}
+            row = rows[0]
+            return {
+                "open_positions": _validate_list_payload(row.get("open_positions"), "open_positions"),
+                "closed_trades": _validate_list_payload(row.get("closed_trades"), "closed_trades"),
+                "ai_watchlist": _validate_list_payload(row.get("ai_watchlist"), "ai_watchlist"),
+            }
+        except (requests.RequestException, KeyError, TypeError, ValueError, PersistenceError) as exc:
+            raise PersistenceError("Pozisyon ve takip verileri Supabase'den okunamadı; mevcut kayıtlar korunuyor.") from exc
+    return {
+        "open_positions": load_user_list(normalized, "open_positions.json"),
+        "closed_trades": load_user_list(normalized, "closed_trades.json"),
+        "ai_watchlist": load_user_list(normalized, "ai_watchlist.json"),
+    }
+
+
+def save_user_portfolio_data(
+    username: str,
+    open_positions: list[dict[str, Any]],
+    closed_trades: list[dict[str, Any]],
+    ai_watchlist: list[dict[str, Any]],
+) -> None:
+    normalized = normalize_username(username)
+    if normalized not in USERS:
+        raise ValueError("Tanımsız kullanıcı.")
+    snapshot = {
+        "open_positions": _validate_list_payload(open_positions, "open_positions"),
+        "closed_trades": _validate_list_payload(closed_trades, "closed_trades"),
+        "ai_watchlist": _validate_list_payload(ai_watchlist, "ai_watchlist"),
+    }
+    if supabase_enabled():
+        try:
+            _rest(
+                "user_portfolio_data",
+                "POST",
+                payload={"username": normalized, **snapshot},
+                prefer="resolution=merge-duplicates",
+            )
+            return
+        except requests.RequestException as exc:
+            raise PersistenceError("Pozisyon ve takip verileri Supabase'e kaydedilemedi.") from exc
+    for key, file_name in (
+        ("open_positions", "open_positions.json"),
+        ("closed_trades", "closed_trades.json"),
+        ("ai_watchlist", "ai_watchlist.json"),
+    ):
+        save_user_list(normalized, file_name, snapshot[key])
 
 
 def load_open_positions(username: str) -> list[dict[str, Any]]:
-    return load_user_list(username, "open_positions.json")
+    return load_user_portfolio_data(username)["open_positions"]
 
 
 def save_open_positions(username: str, positions: list[dict[str, Any]]) -> None:
-    save_user_list(username, "open_positions.json", positions)
+    current = load_user_portfolio_data(username)
+    save_user_portfolio_data(username, positions, current["closed_trades"], current["ai_watchlist"])
 
 
 def load_closed_trades(username: str) -> list[dict[str, Any]]:
-    return load_user_list(username, "closed_trades.json")
+    return load_user_portfolio_data(username)["closed_trades"]
 
 
 def save_closed_trades(username: str, trades: list[dict[str, Any]]) -> None:
-    save_user_list(username, "closed_trades.json", trades)
+    current = load_user_portfolio_data(username)
+    save_user_portfolio_data(username, current["open_positions"], trades, current["ai_watchlist"])
 
 
 def load_ai_watchlist(username: str) -> list[dict[str, Any]]:
     """Return the private Pro watchlist belonging to one user."""
-    return load_user_list(username, "ai_watchlist.json")
+    return load_user_portfolio_data(username)["ai_watchlist"]
 
 
 def save_ai_watchlist(username: str, watchlist: list[dict[str, Any]]) -> None:
-    save_user_list(username, "ai_watchlist.json", watchlist)
+    current = load_user_portfolio_data(username)
+    save_user_portfolio_data(username, current["open_positions"], current["closed_trades"], watchlist)
 
 
 def load_simulation(username: str) -> dict[str, Any]:
