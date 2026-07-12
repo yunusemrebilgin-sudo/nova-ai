@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from plotly.subplots import make_subplots
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import analytics as nova_analytics
@@ -2150,6 +2151,40 @@ def render_scanner_stock_summary(symbol: str) -> None:
     st.caption(DISCLAIMER)
 
 
+def scanner_horizon_to_watch_horizon(scanner_horizon: str) -> str:
+    if scanner_horizon in {"1-5 gün"}:
+        return "Günlük işlem"
+    if scanner_horizon in {"5-10 gün", "10-30 gün"}:
+        return "Kısa vade"
+    if scanner_horizon in {"1-2 ay", "2-4 ay"}:
+        return "Orta vade"
+    return "Uzun vade"
+
+
+def render_scanner_watchlist_add(symbol: str, horizon: str) -> None:
+    if not has_pro_access():
+        st.error("AI takip listesi YEB PRO kullanıcılarına açıktır.")
+        return
+    load_current_user_pro_data()
+    watchlist = st.session_state.get("yeb_ai_watchlist", [])
+    already_added = any(
+        str(item.get("symbol", "")).upper() == symbol and str(item.get("horizon", "")) == horizon
+        for item in watchlist
+    )
+    if not already_added:
+        watchlist.append({
+            "symbol": symbol,
+            "label": symbol,
+            "horizon": horizon,
+            "added_on": now_istanbul().date().isoformat(),
+        })
+        st.session_state.yeb_ai_watchlist = watchlist
+        save_current_user_pro_data()
+    st.success(f"{symbol}, {horizon} vadesiyle AI takip listesine eklendi." if not already_added else f"{symbol} zaten AI takip listende.")
+    st.caption("Bu sekmeyi kapatıp Smart Scanner taramana devam edebilirsin.")
+    components.html("<script>setTimeout(() => window.parent.close(), 1200);</script>", height=0)
+
+
 def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
     sortable_columns = {"AI Güven Endeksi", "Beklenen Getiri %", "Haber Etkisi %", "Haber Dahil Getiri %"}
     header_cells = []
@@ -2161,17 +2196,20 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             )
         else:
             header_cells.append(f"<th>{escape(column)}</th>")
-    header = "".join(header_cells)
+    header = '<th class="nova-add-head">+</th>' + "".join(header_cells)
+    scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or st.session_state.get("smart_scan_horizon") or "1-5 gün")
+    watch_horizon = scanner_horizon_to_watch_horizon(scanner_horizon)
     rows = []
     mobile_cards = []
     for _, row in table[columns].iterrows():
         symbol = str(row.get("Hisse", ""))
-        cells = []
+        add_href = f"/?scanner_add={quote(symbol)}&watch_horizon={quote(watch_horizon)}"
+        cells = [f'<td class="nova-add-cell"><a class="nova-add-link" href="{add_href}" target="_blank" title="AI takip listesine ekle">+</a></td>']
         for column in columns:
             value = row[column]
             if column == "Hisse":
                 cells.append(
-                    f'<td><a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_top" '
+                    f'<td><a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_blank" rel="noopener" '
                     f'title="{escape(symbol)} detayını aç">{escape(symbol)}</a></td>'
                 )
             elif column == "Nova Skoru":
@@ -2194,7 +2232,8 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             f"""
             <article class="nova-mobile-stock">
                 <div class="nova-mobile-top">
-                    <a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_top">{escape(symbol)}</a>
+                    <span><a class="nova-add-link" href="{add_href}" target="_blank" title="AI takip listesine ekle">+</a>
+                    <a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_blank" rel="noopener">{escape(symbol)}</a></span>
                     <span class="nova-score-strong">{score_value}/100</span>
                 </div>
                 <div class="nova-mobile-badges">{render_badge(signal_value)} {render_badge(risk_value)}</div>
@@ -2250,6 +2289,9 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             .nova-scan-table th.nova-sortable {{
                 cursor: ns-resize;
             }}
+            .nova-add-head, .nova-add-cell {{ width:34px; text-align:center !important; padding-left:8px !important; padding-right:8px !important; }}
+            .nova-add-link {{ display:inline-grid; place-items:center; width:26px; height:26px; border-radius:50%; color:#38bdf8; border:1px solid rgba(56,189,248,.45); background:rgba(56,189,248,.10); font-size:19px; font-weight:700; text-decoration:none; line-height:1; }}
+            .nova-add-link:hover {{ color:#07111f; background:#38bdf8; box-shadow:0 0 16px rgba(56,189,248,.32); }}
             .nova-scan-table th.nova-sortable:hover,
             .nova-scan-table th.nova-sortable.active {{
                 color: var(--nova-text, #e5eefc);
@@ -4018,6 +4060,13 @@ def render_page(page: str) -> None:
     if page == PUBLIC_DASHBOARD_PAGE:
         render_dashboard_page()
     elif page == SMART_SCANNER_PAGE:
+        add_symbol = str(st.query_params.get("scanner_add", "")).strip().upper()
+        if add_symbol:
+            if not is_authenticated() and not render_login_page():
+                return
+            add_horizon = str(st.query_params.get("watch_horizon", "Günlük işlem"))
+            render_scanner_watchlist_add(add_symbol, add_horizon if add_horizon in TRADE_HORIZONS else "Günlük işlem")
+            return
         requested_symbol = str(st.query_params.get("scanner_detail", "")).strip().upper()
         if requested_symbol:
             render_scanner_stock_summary(requested_symbol)
@@ -4041,7 +4090,7 @@ def main() -> None:
     init_theme_state()
     init_access_state()
     apply_terminal_theme()
-    if str(st.query_params.get("scanner_detail", "")).strip():
+    if str(st.query_params.get("scanner_detail", "")).strip() or str(st.query_params.get("scanner_add", "")).strip():
         st.session_state.selected_page = SMART_SCANNER_PAGE
     render_app_header()
     selected_page = render_top_navigation()
