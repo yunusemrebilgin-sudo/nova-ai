@@ -2186,6 +2186,12 @@ def render_scanner_watchlist_add(symbol: str, horizon: str) -> None:
 
 
 def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
+    if has_pro_access():
+        load_current_user_pro_data()
+    watched_symbols = {
+        str(item.get("symbol", "")).upper()
+        for item in st.session_state.get("yeb_ai_watchlist", [])
+    }
     sortable_columns = {"AI Güven Endeksi", "Beklenen Getiri %", "Haber Etkisi %", "Haber Dahil Getiri %"}
     header_cells = []
     for index, column in enumerate(columns):
@@ -2204,7 +2210,8 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
     for _, row in table[columns].iterrows():
         symbol = str(row.get("Hisse", ""))
         add_href = f"/?scanner_add={quote(symbol)}&watch_horizon={quote(watch_horizon)}"
-        cells = [f'<td class="nova-add-cell"><a class="nova-add-link" href="{add_href}" target="_blank" title="AI takip listesine ekle">+</a></td>']
+        added_class = " added" if symbol.upper() in watched_symbols else ""
+        cells = [f'<td class="nova-add-cell"><a class="nova-add-link{added_class}" href="{add_href}" target="nova_watchlist_sink" onclick="this.classList.add(\'added\')" title="AI takip listesine ekle">+</a></td>']
         for column in columns:
             value = row[column]
             if column == "Hisse":
@@ -2232,7 +2239,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             f"""
             <article class="nova-mobile-stock">
                 <div class="nova-mobile-top">
-                    <span><a class="nova-add-link" href="{add_href}" target="_blank" title="AI takip listesine ekle">+</a>
+                    <span><a class="nova-add-link{added_class}" href="{add_href}" target="nova_watchlist_sink" onclick="this.classList.add('added')" title="AI takip listesine ekle">+</a>
                     <a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_blank" rel="noopener">{escape(symbol)}</a></span>
                     <span class="nova-score-strong">{score_value}/100</span>
                 </div>
@@ -2292,6 +2299,8 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             .nova-add-head, .nova-add-cell {{ width:34px; text-align:center !important; padding-left:8px !important; padding-right:8px !important; }}
             .nova-add-link {{ display:inline-grid; place-items:center; width:26px; height:26px; border-radius:50%; color:#38bdf8; border:1px solid rgba(56,189,248,.45); background:rgba(56,189,248,.10); font-size:19px; font-weight:700; text-decoration:none; line-height:1; }}
             .nova-add-link:hover {{ color:#07111f; background:#38bdf8; box-shadow:0 0 16px rgba(56,189,248,.32); }}
+            .nova-add-link.added {{ color:#052e24; border-color:#34d399; background:#34d399; box-shadow:0 0 14px rgba(52,211,153,.28); }}
+            .nova-watchlist-sink {{ display:none; width:0; height:0; border:0; }}
             .nova-scan-table th.nova-sortable:hover,
             .nova-scan-table th.nova-sortable.active {{
                 color: var(--nova-text, #e5eefc);
@@ -2392,6 +2401,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             </table>
         </div>
         <div class="nova-mobile-list">{''.join(mobile_cards)}</div>
+        <iframe class="nova-watchlist-sink" name="nova_watchlist_sink" title="Takip listesi işlemi"></iframe>
         <script>
             (() => {{
                 const table = document.querySelector(".nova-scan-table");
