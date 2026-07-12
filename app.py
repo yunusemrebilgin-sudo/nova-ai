@@ -1,10 +1,14 @@
 import pandas as pd
 import plotly.graph_objects as go
+import base64
+import hashlib
+import hmac
 import json
 import re
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+import extra_streamlit_components as stx
 import yfinance as yf
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -89,6 +93,9 @@ PRO_MODULES = [
 ]
 DEFAULT_PRO_MODULE = "Pozisyon Takibi"
 APP_TIMEZONE_NAME = "Europe/Istanbul"
+AUTH_SESSION_HOURS = 24
+AUTH_COOKIE_NAME = "nova_auth_session"
+COOKIE_MANAGER = stx.CookieManager()
 
 
 def app_timezone() -> timezone:
@@ -128,6 +135,50 @@ def init_access_state() -> None:
         st.session_state.yeb_ai_watchlist = []
     if "yeb_pro_module" not in st.session_state:
         st.session_state.yeb_pro_module = DEFAULT_PRO_MODULE
+    restore_persistent_session()
+
+
+def auth_session_secret() -> str:
+    try:
+        return str(st.secrets.get("AUTH_SESSION_SECRET") or st.secrets.get("SUPABASE_SERVICE_ROLE_KEY") or "")
+    except Exception:
+        return "nova-local-session-fallback"
+
+
+def create_auth_session_token(username: str) -> str:
+    payload = {"u": username, "exp": int((now_istanbul() + timedelta(hours=AUTH_SESSION_HOURS)).timestamp())}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    signature = hmac.new(auth_session_secret().encode(), encoded.encode(), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def validate_auth_session_token(token: str) -> dict[str, object] | None:
+    try:
+        encoded, signature = token.split(".", 1)
+        expected = hmac.new(auth_session_secret().encode(), encoded.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        padded = encoded + ("=" * (-len(encoded) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+        username = user_store.normalize_username(str(payload["u"]))
+        if int(payload["exp"]) < int(now_istanbul().timestamp()) or username not in user_store.USERS:
+            return None
+        return {"username": username, "is_pro": user_store.is_pro_user(username)}
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def restore_persistent_session() -> None:
+    if st.session_state.get("is_authenticated"):
+        return
+    token = str(COOKIE_MANAGER.get(AUTH_COOKIE_NAME) or "").strip()
+    restored = validate_auth_session_token(token) if token else None
+    if not restored:
+        return
+    st.session_state.is_authenticated = True
+    st.session_state.auth_user = restored["username"]
+    st.session_state.yeb_pro_active = bool(restored["is_pro"])
+    st.session_state.yeb_data_user = ""
 
 
 def is_authenticated() -> bool:
@@ -193,6 +244,7 @@ def logout_current_user() -> None:
     st.session_state.yeb_open_positions = []
     st.session_state.yeb_closed_trades = []
     st.session_state.yeb_ai_watchlist = []
+    COOKIE_MANAGER.delete(AUTH_COOKIE_NAME)
 
 
 @st.cache_data(show_spinner=False)
@@ -1965,11 +2017,11 @@ def render_percent_impact_badge(value: object) -> str:
 def open_symbol_in_dashboard(symbol: str) -> None:
     st.session_state.quick_ticker = symbol
     st.session_state.selected_page = PUBLIC_DASHBOARD_PAGE
-    st.query_params.clear()
+    st.query_params.pop("scanner_detail", None)
 
 
 def close_scanner_stock_dialog() -> None:
-    st.query_params.clear()
+    st.query_params.pop("scanner_detail", None)
 
 
 def render_scanner_stock_dialog(symbol: str) -> None:
@@ -2925,6 +2977,11 @@ def render_login_page() -> bool:
         st.session_state.auth_user = user["username"]
         st.session_state.yeb_pro_active = bool(user["is_pro"])
         st.session_state.yeb_data_user = ""
+        COOKIE_MANAGER.set(
+            AUTH_COOKIE_NAME,
+            create_auth_session_token(user["username"]),
+            expires_at=now_istanbul() + timedelta(hours=AUTH_SESSION_HOURS),
+        )
         load_current_user_pro_data()
         st.success("Giriş başarılı.")
         st.rerun()
