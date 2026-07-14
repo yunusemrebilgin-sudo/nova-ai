@@ -119,6 +119,12 @@ class InceptionTests(unittest.TestCase):
         self.assertIn('"Seçilenleri Inception’a Kaydet"', source)
         self.assertIn("render_scanner_watchlist_add(selected_for_inception", source)
 
+    def test_scanner_has_native_quick_add_buttons(self):
+        source = inspect.getsource(app.render_smart_scanner_page)
+        self.assertIn('f"＋ {symbol.replace', source)
+        self.assertIn("render_scanner_watchlist_add([symbol]", source)
+        self.assertIn("disabled=is_active", source)
+
     def test_scanner_batch_add_reuses_scan_results_without_downloading_prices(self):
         source = inspect.getsource(app.render_scanner_watchlist_add)
         self.assertIn('st.session_state.get("smart_scanner_results"', source)

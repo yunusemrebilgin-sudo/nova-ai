@@ -2934,8 +2934,25 @@ def render_smart_scanner_page() -> None:
             if str(symbol).upper() not in active_symbols
         ]
         with st.container(border=True):
+            st.markdown("**Hızlı Inception ekleme**")
+            st.caption("Aşağıdaki + düğmelerinden istediğiniz hisseyi doğrudan ekleyebilirsiniz.")
+            top_symbols = [str(symbol) for symbol in filtered_table.head(10)["Hisse"].tolist()]
+            quick_columns = st.columns(5)
+            scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or selected_scan_horizon)
+            watch_horizon = scanner_horizon_to_watch_horizon(scanner_horizon)
+            for index, symbol in enumerate(top_symbols):
+                is_active = symbol.upper() in active_symbols
+                with quick_columns[index % 5]:
+                    if st.button(
+                        f"✓ {symbol.replace('.IS', '')}" if is_active else f"＋ {symbol.replace('.IS', '')}",
+                        key=f"smart_scanner_quick_add_{symbol}",
+                        disabled=is_active,
+                        use_container_width=True,
+                    ):
+                        render_scanner_watchlist_add([symbol], watch_horizon)
+            st.divider()
             selected_for_inception = st.multiselect(
-                "Inception’a eklenecek hisseler",
+                "Çoklu ekleme",
                 selectable_symbols,
                 key="smart_scanner_inception_selection",
                 placeholder="Bir veya birden fazla hisse seçin",
@@ -2946,8 +2963,7 @@ def render_smart_scanner_page() -> None:
                 type="primary",
                 disabled=not selected_for_inception,
             ):
-                scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or selected_scan_horizon)
-                render_scanner_watchlist_add(selected_for_inception, scanner_horizon_to_watch_horizon(scanner_horizon))
+                render_scanner_watchlist_add(selected_for_inception, watch_horizon)
 
     st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
     top_rows = filtered_table.head(10)
