@@ -361,14 +361,20 @@ def save_current_user_pro_data() -> None:
             st.session_state.get("inception_history", []),
             st.session_state.get("inception_metadata", []),
         )
-        simulation_saver = getattr(user_store, "save_simulation", None)
-        if callable(simulation_saver):
-            simulation_saver(username, st.session_state.get("yeb_simulation", {}))
     except user_store.PersistenceError:
         st.session_state.yeb_data_user = ""
         st.session_state.yeb_persistent_data_loaded = False
         st.error("İşlem kalıcı veri deposuna kaydedilemedi. Mevcut kayıtların üzerine boş veri yazılmadı; lütfen bağlantı düzeldikten sonra tekrar deneyin.")
         st.stop()
+    # Portfolio/Inception and the paper-trading simulation are independent
+    # stores. A simulation-table outage must not turn a successful Inception
+    # write into a false failure.
+    simulation_saver = getattr(user_store, "save_simulation", None)
+    if callable(simulation_saver):
+        try:
+            simulation_saver(username, st.session_state.get("yeb_simulation", {}))
+        except user_store.PersistenceError:
+            st.warning("Inception kaydı tamamlandı; simülasyon verisi şu anda güncellenemedi.")
     st.session_state.yeb_data_user = username
 
 

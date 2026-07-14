@@ -77,6 +77,18 @@ class UserPersistenceTests(unittest.TestCase):
         self.assertEqual(decoded["inception_history"], snapshot["inception_history"])
         self.assertEqual(decoded["inception_metadata"], snapshot["inception_metadata"])
 
+    def test_supabase_snapshot_is_strict_json_safe(self):
+        backend = SupabasePortfolioBackend()
+        user_store.configure_supabase("https://example.supabase.co", "sb_secret_test")
+        with patch("user_store._rest", side_effect=backend.request):
+            user_store.save_user_portfolio_data(
+                "kullanici1", [], [], [],
+                [{"symbol": "ASTOR.IS", "initial": {"rsi": float("nan")}}], [], [],
+            )
+        payload = backend.calls[-1][3]
+        self.assertIsNone(payload["inception_active"][0]["initial"]["rsi"])
+        json.dumps(payload, allow_nan=False)
+
     def test_records_survive_application_restart(self):
         backend = SupabasePortfolioBackend()
         user_store.configure_supabase("https://example.supabase.co", "sb_secret_test")
@@ -179,6 +191,24 @@ class UserPersistenceTests(unittest.TestCase):
                 app.save_current_user_pro_data()
         save.assert_not_called()
 
+    def test_simulation_failure_does_not_cancel_successful_inception_save(self):
+        session = AttributeSession({
+            "yeb_persistent_data_loaded": True, "yeb_open_positions": [],
+            "yeb_closed_trades": [], "yeb_ai_watchlist": [],
+            "inception_active": [{"symbol": "ASTOR.IS"}], "inception_history": [],
+            "inception_metadata": [], "yeb_simulation": {"week": "2026-W29"},
+        })
+        fake_st = FakeStreamlit(session)
+        with patch.object(app, "st", fake_st), patch.object(app, "current_auth_user", return_value="kullanici1"), patch.object(
+            user_store, "save_user_portfolio_data"
+        ) as save_portfolio, patch.object(
+            user_store, "save_simulation", side_effect=user_store.PersistenceError("simulation failed")
+        ):
+            app.save_current_user_pro_data()
+        save_portfolio.assert_called_once()
+        self.assertEqual(len(fake_st.warnings), 1)
+        self.assertEqual(fake_st.errors, [])
+
 
 class AttributeSession(dict):
     def __getattr__(self, name):
@@ -200,9 +230,13 @@ class FakeStreamlit:
         self.session_state = session
         self.secrets = {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_test"}
         self.errors = []
+        self.warnings = []
 
     def error(self, message):
         self.errors.append(message)
+
+    def warning(self, message):
+        self.warnings.append(message)
 
     def stop(self):
         raise StopSignal()

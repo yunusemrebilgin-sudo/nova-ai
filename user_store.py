@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -148,6 +149,24 @@ def _validate_list_payload(value: Any, field_name: str) -> list[dict[str, Any]]:
     return [dict(item) for item in value]
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert analytics values to strict JSON before sending them to PostgREST."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "item") and callable(value.item):
+        try:
+            return _json_safe(value.item())
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -248,14 +267,14 @@ def save_user_portfolio_data(
     normalized = normalize_username(username)
     if normalized not in KNOWN_USERNAMES:
         raise ValueError("Tanımsız kullanıcı.")
-    snapshot = {
+    snapshot = _json_safe({
         "open_positions": _validate_list_payload(open_positions, "open_positions"),
         "closed_trades": _validate_list_payload(closed_trades, "closed_trades"),
         "ai_watchlist": _validate_list_payload(ai_watchlist, "ai_watchlist"),
         "inception_active": _validate_list_payload(inception_active or [], "inception_active"),
         "inception_history": _validate_list_payload(inception_history or [], "inception_history"),
         "inception_metadata": _validate_list_payload(inception_metadata or [], "inception_metadata"),
-    }
+    })
     if supabase_enabled():
         try:
             _rest(
