@@ -108,11 +108,20 @@ class InceptionTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(updated[0]["dynamic"]["expected_return"], 4.2)
 
-    def test_scanner_add_links_use_serial_top_level_navigation(self):
+    def test_scanner_add_links_queue_one_batch_and_only_persisted_rows_are_green(self):
         source = inspect.getsource(app.render_nova_bist_table)
-        self.assertIn('target="_top"', source)
+        self.assertIn("scanner_add_batch", source)
+        self.assertIn("2500", source)
         self.assertNotIn('target="nova_watchlist_sink"', source)
+        self.assertNotIn("this.classList.add('added')", source)
+        self.assertIn('class="nova-add-link{added_class}"', source)
         self.assertIn('st.session_state.get("inception_active", [])', source)
+
+    def test_scanner_batch_add_reuses_scan_results_without_downloading_prices(self):
+        source = inspect.getsource(app.render_scanner_watchlist_add)
+        self.assertIn('st.session_state.get("smart_scanner_results"', source)
+        self.assertNotIn("download_price_data", source)
+        self.assertEqual(source.count("save_current_user_pro_data()"), 1)
 
     def test_failed_update_preserves_old_records(self):
         records = [inception.create_record(snapshot(), "Dashboard", NOW)]

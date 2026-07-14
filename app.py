@@ -2317,7 +2317,7 @@ def scanner_horizon_to_watch_horizon(scanner_horizon: str) -> str:
     return "Uzun vade"
 
 
-def render_scanner_watchlist_add(symbol: str, horizon: str) -> None:
+def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
     if not has_pro_access():
         st.error("AI takip listesi YEB PRO kullanıcılarına açıktır.")
         return
@@ -2326,15 +2326,21 @@ def render_scanner_watchlist_add(symbol: str, horizon: str) -> None:
     st.session_state.yeb_persistent_data_loaded = False
     load_current_user_pro_data()
     active = st.session_state.get("inception_active", [])
-    already_added = any(
-        str(item.get("symbol", "")).upper() == symbol and item.get("status", "active") == "active" for item in active
-    )
-    if not already_added:
-        raw_data = nova_scanner.download_price_data(symbol, f"inception-add-{now_istanbul().isoformat()}")
-        scan_row = nova_scanner._scan_row(symbol, symbol, raw_data, horizon)
-        if scan_row is None:
-            st.error("Inception başlangıç kaydı için güncel veri alınamadı.")
-            return
+    scan_table = normalize_smart_scanner_table(st.session_state.get("smart_scanner_results", pd.DataFrame()))
+    added_symbols = []
+    skipped_symbols = []
+    for symbol in dict.fromkeys(item.strip().upper() for item in symbols if item.strip()):
+        already_added = any(
+            str(item.get("symbol", "")).upper() == symbol and item.get("status", "active") == "active" for item in active
+        )
+        matching = scan_table.loc[scan_table["Hisse"].astype(str).str.upper() == symbol] if not scan_table.empty else pd.DataFrame()
+        if already_added:
+            skipped_symbols.append(symbol)
+            continue
+        if matching.empty:
+            skipped_symbols.append(symbol)
+            continue
+        scan_row = matching.iloc[0].to_dict()
         price = float(scan_row["Son Fiyat"])
         expected = float(scan_row["Beklenen Getiri %"])
         snapshot = {
@@ -2344,13 +2350,18 @@ def render_scanner_watchlist_add(symbol: str, horizon: str) -> None:
             "confidence": scan_row["AI Güven Endeksi"], "indicators": {k: scan_row.get(k) for k in ("RSI", "MACD", "Volatilite", "Hacim Oranı")},
             "sector": "Bilinmiyor", "market_state": scan_row["Trend"],
         }
-        st.session_state.inception_active, _ = nova_inception.add_record(active, snapshot, "Smart Scanner", now_istanbul())
+        active, added = nova_inception.add_record(active, snapshot, "Smart Scanner", now_istanbul())
+        if added:
+            added_symbols.append(symbol)
+    if added_symbols:
+        st.session_state.inception_active = active
         save_current_user_pro_data()
-    st.session_state.scanner_add_notice = (
-        f"{symbol}, {horizon} vadesiyle Inception’a eklendi."
-        if not already_added else f"{symbol.replace('.IS', '')} zaten Inception’da takip ediliyor."
-    )
-    for key in ("scanner_add", "watch_horizon"):
+    if added_symbols:
+        names = ", ".join(symbol.replace(".IS", "") for symbol in added_symbols)
+        st.session_state.scanner_add_notice = f"{names} Inception’a kaydedildi."
+    elif skipped_symbols:
+        st.session_state.scanner_add_notice = "Seçilen hisseler zaten Inception’da veya güncel tarama sonucunda bulunamadı."
+    for key in ("scanner_add", "scanner_add_batch", "watch_horizon"):
         if key in st.query_params:
             del st.query_params[key]
     st.rerun()
@@ -2380,9 +2391,8 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
     mobile_cards = []
     for _, row in table[columns].iterrows():
         symbol = str(row.get("Hisse", ""))
-        add_href = f"/?scanner_add={quote(symbol)}&watch_horizon={quote(watch_horizon)}"
         added_class = " added" if symbol.upper() in watched_symbols else ""
-        cells = [f'<td class="nova-add-cell"><a class="nova-add-link{added_class}" href="{add_href}" target="_top" onclick="this.classList.add(\'added\')" title="AI takip listesine ekle">+</a></td>']
+        cells = [f'<td class="nova-add-cell"><button class="nova-add-link{added_class}" type="button" data-symbol="{escape(symbol)}" title="Inception seçimine ekle">+</button></td>']
         for column in columns:
             value = row[column]
             if column == "Hisse":
@@ -2410,7 +2420,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             f"""
             <article class="nova-mobile-stock">
                 <div class="nova-mobile-top">
-                    <span><a class="nova-add-link{added_class}" href="{add_href}" target="_top" onclick="this.classList.add('added')" title="AI takip listesine ekle">+</a>
+                    <span><button class="nova-add-link{added_class}" type="button" data-symbol="{escape(symbol)}" title="Inception seçimine ekle">+</button>
                     <a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_blank" rel="noopener">{escape(symbol)}</a></span>
                     <span class="nova-score-strong">{score_value}/100</span>
                 </div>
@@ -2470,6 +2480,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             .nova-add-head, .nova-add-cell {{ width:34px; text-align:center !important; padding-left:8px !important; padding-right:8px !important; }}
             .nova-add-link {{ display:inline-grid; place-items:center; width:26px; height:26px; border-radius:50%; color:#38bdf8; border:1px solid rgba(56,189,248,.45); background:rgba(56,189,248,.10); font-size:19px; font-weight:700; text-decoration:none; line-height:1; }}
             .nova-add-link:hover {{ color:#07111f; background:#38bdf8; box-shadow:0 0 16px rgba(56,189,248,.32); }}
+            .nova-add-link.queued {{ color:#07111f; border-color:#fbbf24; background:#fbbf24; box-shadow:0 0 14px rgba(251,191,36,.28); }}
             .nova-add-link.added {{ color:#052e24; border-color:#34d399; background:#34d399; box-shadow:0 0 14px rgba(52,211,153,.28); }}
             .nova-watchlist-sink {{ display:none; width:0; height:0; border:0; }}
             .nova-scan-table th.nova-sortable:hover,
@@ -2576,6 +2587,25 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             (() => {{
                 const table = document.querySelector(".nova-scan-table");
                 if (!table) return;
+                const queued = new Set();
+                let submitTimer = null;
+                document.querySelectorAll(".nova-add-link:not(.added)").forEach((button) => {{
+                    button.addEventListener("click", () => {{
+                        const symbol = button.dataset.symbol;
+                        if (!symbol) return;
+                        queued.add(symbol);
+                        document.querySelectorAll(`.nova-add-link[data-symbol="${{symbol}}"]`).forEach((item) => item.classList.add("queued"));
+                        window.clearTimeout(submitTimer);
+                        submitTimer = window.setTimeout(() => {{
+                            const href = `/?scanner_add_batch=${{encodeURIComponent(Array.from(queued).join(","))}}&watch_horizon=${{encodeURIComponent("{watch_horizon}")}}`;
+                            const link = document.createElement("a");
+                            link.href = href;
+                            link.target = "_top";
+                            document.body.appendChild(link);
+                            link.click();
+                        }}, 2500);
+                    }});
+                }});
                 const tbody = table.querySelector("tbody");
                 const directions = {{}};
                 const numericValue = (row, index) => {{
@@ -4619,12 +4649,12 @@ def render_page(page: str) -> None:
     elif page == ANALYSIS_REPORT_PAGE:
         render_analysis_report_page()
     elif page == SMART_SCANNER_PAGE:
-        add_symbol = str(st.query_params.get("scanner_add", "")).strip().upper()
-        if add_symbol:
+        add_batch = str(st.query_params.get("scanner_add_batch", st.query_params.get("scanner_add", ""))).strip().upper()
+        if add_batch:
             if not is_authenticated() and not render_login_page():
                 return
             add_horizon = str(st.query_params.get("watch_horizon", "Günlük işlem"))
-            render_scanner_watchlist_add(add_symbol, add_horizon if add_horizon in TRADE_HORIZONS else "Günlük işlem")
+            render_scanner_watchlist_add(add_batch.split(","), add_horizon if add_horizon in TRADE_HORIZONS else "Günlük işlem")
             return
         requested_symbol = str(st.query_params.get("scanner_detail", "")).strip().upper()
         if requested_symbol:
