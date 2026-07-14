@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -30,9 +31,9 @@ def configure_users(payload: Any) -> None:
         except json.JSONDecodeError:
             payload = {}
     configured = {}
-    if isinstance(payload, dict):
+    if isinstance(payload, Mapping):
         for username, value in payload.items():
-            if not isinstance(value, dict) or not str(value.get("password", "")):
+            if not isinstance(value, Mapping) or not str(value.get("password", "")):
                 continue
             configured[normalize_username(str(username))] = {
                 "password": str(value["password"]),
