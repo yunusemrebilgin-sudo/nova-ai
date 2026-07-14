@@ -2931,44 +2931,28 @@ def render_smart_scanner_page() -> None:
         }
         with st.container(border=True):
             st.markdown("#### Inception’a Hisse Ekle")
-            st.caption("Listeden istediğiniz sayıda hisseyi işaretleyip tek seferde kaydedebilirsiniz.")
-            selector_source = filtered_table.loc[
-                ~filtered_table["Hisse"].astype(str).str.upper().isin(active_symbols),
-                ["Hisse", "Nova Score", "Sonuç", "Beklenen Getiri %"],
-            ].copy()
-            selector_source.insert(0, "Ekle", False)
+            st.caption("Hissenin yanındaki + düğmesine basın; doğrudan Inception’a kaydedilir.")
             scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or selected_scan_horizon)
             watch_horizon = scanner_horizon_to_watch_horizon(scanner_horizon)
-            if selector_source.empty:
-                st.success("Görüntülenen hisselerin tamamı Inception’da kayıtlı.")
-            else:
-                with st.form("smart_scanner_inception_form", clear_on_submit=True):
-                    selector = st.data_editor(
-                        selector_source,
-                        key="smart_scanner_inception_editor",
-                        hide_index=True,
-                        use_container_width=True,
-                        height=min(520, 38 + len(selector_source) * 35),
-                        disabled=["Hisse", "Nova Score", "Sonuç", "Beklenen Getiri %"],
-                        column_config={
-                            "Ekle": st.column_config.CheckboxColumn("Ekle", help="Inception’a eklenecek hisseleri işaretleyin."),
-                            "Hisse": st.column_config.TextColumn("Hisse"),
-                            "Nova Score": st.column_config.NumberColumn("Nova Skoru", format="%d/100"),
-                            "Sonuç": st.column_config.TextColumn("Sinyal"),
-                            "Beklenen Getiri %": st.column_config.NumberColumn("Beklenen Getiri %", format="%.2f"),
-                        },
-                    )
-                    submit_inception = st.form_submit_button(
-                        "Seçilenleri Inception’a Kaydet",
-                        type="primary",
-                        use_container_width=True,
-                    )
-                if submit_inception:
-                    selected_for_inception = selector.loc[selector["Ekle"], "Hisse"].astype(str).tolist()
-                    if not selected_for_inception:
-                        st.warning("Kaydetmek için en az bir hisseyi işaretleyin.")
-                    else:
-                        render_scanner_watchlist_add(selected_for_inception, watch_horizon)
+            header_cols = st.columns([0.45, 1.35, 1.0, 1.4, 1.15])
+            for column, label in zip(header_cols, ["", "Hisse", "Nova Skoru", "Sinyal", "Beklenen Getiri"]):
+                column.caption(label)
+            for row_index, (_, scanner_row) in enumerate(filtered_table.iterrows()):
+                symbol = str(scanner_row["Hisse"])
+                is_active = symbol.upper() in active_symbols
+                row_cols = st.columns([0.45, 1.35, 1.0, 1.4, 1.15], vertical_alignment="center")
+                with row_cols[0]:
+                    if st.button(
+                        "✓" if is_active else "+",
+                        key=f"smart_scanner_row_add_{row_index}_{symbol}",
+                        disabled=is_active,
+                        help="Inception’da kayıtlı" if is_active else f"{symbol} hissesini Inception’a ekle",
+                    ):
+                        render_scanner_watchlist_add([symbol], watch_horizon)
+                row_cols[1].markdown(f"**{symbol}**")
+                row_cols[2].write(f"{int(scanner_row['Nova Score'])}/100")
+                row_cols[3].write(str(scanner_row["Sonuç"]))
+                row_cols[4].write(f"%{float(scanner_row['Beklenen Getiri %']):.2f}")
 
     st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
     top_rows = filtered_table.head(10)

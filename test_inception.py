@@ -113,14 +113,13 @@ class InceptionTests(unittest.TestCase):
         self.assertNotIn("scanner_add_batch", source)
         self.assertNotIn("nova-add-link", source)
 
-    def test_scanner_uses_native_streamlit_batch_selection(self):
+    def test_scanner_uses_native_per_row_add_buttons(self):
         source = inspect.getsource(app.render_smart_scanner_page)
-        self.assertIn('st.data_editor(', source)
-        self.assertIn('CheckboxColumn("Ekle"', source)
-        self.assertIn('st.form("smart_scanner_inception_form"', source)
-        self.assertIn('"Seçilenleri Inception’a Kaydet"', source)
-        self.assertIn("render_scanner_watchlist_add(selected_for_inception", source)
-        self.assertNotIn("smart_scanner_quick_add_", source)
+        self.assertIn('"✓" if is_active else "+"', source)
+        self.assertIn("smart_scanner_row_add_", source)
+        self.assertIn("render_scanner_watchlist_add([symbol]", source)
+        self.assertNotIn("st.data_editor(", source)
+        self.assertNotIn("form_submit_button", source)
 
     def test_scanner_batch_add_reuses_scan_results_without_downloading_prices(self):
         source = inspect.getsource(app.render_scanner_watchlist_add)
