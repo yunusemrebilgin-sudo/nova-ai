@@ -2315,6 +2315,9 @@ def render_scanner_watchlist_add(symbol: str, horizon: str) -> None:
     if not has_pro_access():
         st.error("AI takip listesi YEB PRO kullanıcılarına açıktır.")
         return
+    # Every user initiated add must merge with the latest persisted snapshot.
+    # This prevents a stale browser session from overwriting a recently added symbol.
+    st.session_state.yeb_persistent_data_loaded = False
     load_current_user_pro_data()
     active = st.session_state.get("inception_active", [])
     already_added = any(
@@ -2337,9 +2340,14 @@ def render_scanner_watchlist_add(symbol: str, horizon: str) -> None:
         }
         st.session_state.inception_active, _ = nova_inception.add_record(active, snapshot, "Smart Scanner", now_istanbul())
         save_current_user_pro_data()
-    st.success(f"{symbol}, {horizon} vadesiyle Inception’a eklendi." if not already_added else f"{symbol.replace('.IS', '')} zaten Inception’da takip ediliyor.")
-    st.caption("Bu sekmeyi kapatıp Smart Scanner taramana devam edebilirsin.")
-    components.html("<script>setTimeout(() => window.parent.close(), 1200);</script>", height=0)
+    st.session_state.scanner_add_notice = (
+        f"{symbol}, {horizon} vadesiyle Inception’a eklendi."
+        if not already_added else f"{symbol.replace('.IS', '')} zaten Inception’da takip ediliyor."
+    )
+    for key in ("scanner_add", "watch_horizon"):
+        if key in st.query_params:
+            del st.query_params[key]
+    st.rerun()
 
 
 def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
@@ -2347,7 +2355,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
         load_current_user_pro_data()
     watched_symbols = {
         str(item.get("symbol", "")).upper()
-        for item in st.session_state.get("yeb_ai_watchlist", [])
+        for item in st.session_state.get("inception_active", [])
     }
     sortable_columns = {"AI Güven Endeksi", "Beklenen Getiri %", "Haber Etkisi %", "Haber Dahil Getiri %"}
     header_cells = []
@@ -2368,7 +2376,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
         symbol = str(row.get("Hisse", ""))
         add_href = f"/?scanner_add={quote(symbol)}&watch_horizon={quote(watch_horizon)}"
         added_class = " added" if symbol.upper() in watched_symbols else ""
-        cells = [f'<td class="nova-add-cell"><a class="nova-add-link{added_class}" href="{add_href}" target="nova_watchlist_sink" onclick="this.classList.add(\'added\')" title="AI takip listesine ekle">+</a></td>']
+        cells = [f'<td class="nova-add-cell"><a class="nova-add-link{added_class}" href="{add_href}" target="_top" onclick="this.classList.add(\'added\')" title="AI takip listesine ekle">+</a></td>']
         for column in columns:
             value = row[column]
             if column == "Hisse":
@@ -2396,7 +2404,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             f"""
             <article class="nova-mobile-stock">
                 <div class="nova-mobile-top">
-                    <span><a class="nova-add-link{added_class}" href="{add_href}" target="nova_watchlist_sink" onclick="this.classList.add('added')" title="AI takip listesine ekle">+</a>
+                    <span><a class="nova-add-link{added_class}" href="{add_href}" target="_top" onclick="this.classList.add('added')" title="AI takip listesine ekle">+</a>
                     <a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_blank" rel="noopener">{escape(symbol)}</a></span>
                     <span class="nova-score-strong">{score_value}/100</span>
                 </div>
@@ -2558,7 +2566,6 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             </table>
         </div>
         <div class="nova-mobile-list">{''.join(mobile_cards)}</div>
-        <iframe class="nova-watchlist-sink" name="nova_watchlist_sink" title="Takip listesi işlemi"></iframe>
         <script>
             (() => {{
                 const table = document.querySelector(".nova-scan-table");
@@ -2789,6 +2796,9 @@ def render_market_scanner_page() -> None:
 
 def render_smart_scanner_page() -> None:
     st.title("🔥 Smart Scanner")
+    scanner_add_notice = st.session_state.pop("scanner_add_notice", None)
+    if scanner_add_notice:
+        st.success(scanner_add_notice)
     st.markdown(
         '<div class="nova-subtitle">BIST hisselerini Nova AI karar motoru ile filtreler ve fırsat listesini oluşturur.</div>',
         unsafe_allow_html=True,
@@ -4445,7 +4455,20 @@ def update_inception_records(active: list[dict], now: datetime, downloader=nova_
     for record in active:
         try:
             raw = downloader(record["symbol"], cycle_id)
-            used = raw.loc[raw.index >= pd.Timestamp(record["added_at"]).tz_localize(None)] if not raw.empty else raw
+            if raw.empty:
+                used = raw
+            else:
+                added_at = pd.Timestamp(record["added_at"])
+                if added_at.tzinfo is not None:
+                    added_at = added_at.tz_convert(APP_TIMEZONE_NAME).tz_localize(None)
+                index = pd.DatetimeIndex(raw.index)
+                if index.tz is not None:
+                    index = index.tz_convert(APP_TIMEZONE_NAME).tz_localize(None)
+                used = raw.loc[index.normalize() >= added_at.normalize()]
+                # On weekends/holidays the latest available close predates the
+                # tracking timestamp and is still the valid current market data.
+                if used.empty:
+                    used = raw.tail(1)
             row = nova_scanner._scan_row(record["symbol"], record["symbol"], raw, record.get("horizon", "1-5 gün"))
             if row is None or used.empty:
                 return active, False, None

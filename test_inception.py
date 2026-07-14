@@ -99,6 +99,21 @@ class InceptionTests(unittest.TestCase):
         self.assertTrue(success); self.assertEqual(len(updated), 2); self.assertEqual(downloader.call_count, 2)
         self.assertNotIn("scan_smart_market", inspect.getsource(app.update_inception_records))
 
+    def test_same_day_daily_bar_is_not_excluded_by_added_time(self):
+        added_at = NOW.replace(hour=23, minute=7)
+        records = [inception.create_record(snapshot(), "Smart Scanner", added_at)]
+        same_day_frame = frame().iloc[:1]
+        with patch("app.nova_scanner._scan_row", return_value=scan_row()):
+            updated, success, _ = app.update_inception_records(records, added_at, Mock(return_value=same_day_frame))
+        self.assertTrue(success)
+        self.assertEqual(updated[0]["dynamic"]["expected_return"], 4.2)
+
+    def test_scanner_add_links_use_serial_top_level_navigation(self):
+        source = inspect.getsource(app.render_nova_bist_table)
+        self.assertIn('target="_top"', source)
+        self.assertNotIn('target="nova_watchlist_sink"', source)
+        self.assertIn('st.session_state.get("inception_active", [])', source)
+
     def test_failed_update_preserves_old_records(self):
         records = [inception.create_record(snapshot(), "Dashboard", NOW)]
         updated, success, _ = app.update_inception_records(records, NOW, Mock(return_value=pd.DataFrame()))
