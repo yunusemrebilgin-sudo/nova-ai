@@ -10,6 +10,7 @@ import re
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+import streamlit.components.v2 as components_v2
 import extra_streamlit_components as stx
 import yfinance as yf
 from datetime import datetime, timedelta, timezone
@@ -45,6 +46,53 @@ SMART_SCANNER_HORIZONS = [
 ]
 SMART_SCANNER_CALC_VERSION = "smart-scanner-dynamic-return-v2"
 SMART_SCAN_COOLDOWN_SECONDS = 5 * 60
+
+SCANNER_TABLE_COMPONENT_JS = r"""
+export default function(component) {
+    const { data, setTriggerValue, parentElement } = component;
+    parentElement.innerHTML = data.html;
+    parentElement.querySelectorAll("[data-add-symbol]").forEach((button) => {
+        button.onclick = () => {
+            if (!button.disabled) setTriggerValue("add", button.dataset.addSymbol);
+        };
+    });
+    const table = parentElement.querySelector(".nova-scan-table");
+    if (!table) return;
+    const tbody = table.querySelector("tbody");
+    const directions = {};
+    const numericValue = (row, index) => {
+        const text = row.children[index]?.innerText || "";
+        const match = text.replace(",", ".").match(/-?\d+(\.\d+)?/);
+        return match ? Number.parseFloat(match[0]) : 0;
+    };
+    table.querySelectorAll("th[data-sortable='true']").forEach((header) => {
+        header.ondblclick = () => {
+            const index = Number.parseInt(header.dataset.sortIndex, 10);
+            const column = header.dataset.column;
+            const direction = directions[column] === "desc" ? "asc" : "desc";
+            directions[column] = direction;
+            const rows = Array.from(tbody.querySelectorAll("tr"));
+            rows.sort((left, right) => {
+                const delta = numericValue(left, index) - numericValue(right, index);
+                return direction === "desc" ? -delta : delta;
+            });
+            rows.forEach((row) => tbody.appendChild(row));
+            table.querySelectorAll("th[data-sortable='true']").forEach((item) => {
+                item.classList.remove("active");
+                const mark = item.querySelector(".nova-sort-mark");
+                if (mark) mark.textContent = "⇅";
+            });
+            header.classList.add("active");
+            const mark = header.querySelector(".nova-sort-mark");
+            if (mark) mark.textContent = direction === "desc" ? "↓" : "↑";
+        };
+    });
+}
+"""
+SCANNER_TABLE_COMPONENT = components_v2.component(
+    "nova_scanner_table",
+    js=SCANNER_TABLE_COMPONENT_JS,
+)
 
 GLOBAL_TICKERS = [
     "AAPL",
@@ -2367,23 +2415,38 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
     st.rerun()
 
 
-def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
+def render_nova_bist_table(table: pd.DataFrame, columns: list[str], *, enable_inception: bool = False, table_key: str = "nova_bist_table") -> None:
+    active_symbols = set()
+    if enable_inception and has_pro_access():
+        load_current_user_pro_data()
+        active_symbols = {
+            str(item.get("symbol", "")).upper()
+            for item in st.session_state.get("inception_active", [])
+            if item.get("status", "active") == "active"
+        }
     sortable_columns = {"AI Güven Endeksi", "Beklenen Getiri %", "Haber Etkisi %", "Haber Dahil Getiri %"}
     header_cells = []
     for index, column in enumerate(columns):
         if column in sortable_columns:
             header_cells.append(
-                f'<th class="nova-sortable" data-sortable="true" data-sort-index="{index}" '
+                f'<th class="nova-sortable" data-sortable="true" data-sort-index="{index + (1 if enable_inception else 0)}" '
                 f'data-column="{escape(column)}" title="Çift tıkla sırala">{escape(column)} <span class="nova-sort-mark">⇅</span></th>'
             )
         else:
             header_cells.append(f"<th>{escape(column)}</th>")
-    header = "".join(header_cells)
+    header = ('<th class="nova-add-head">+</th>' if enable_inception else "") + "".join(header_cells)
     rows = []
     mobile_cards = []
     for _, row in table[columns].iterrows():
         symbol = str(row.get("Hisse", ""))
-        cells = []
+        if enable_inception:
+            is_active = symbol.upper() in active_symbols
+            button_class = "nova-add-button added" if is_active else "nova-add-button"
+            button_label = "✓" if is_active else "+"
+            button_title = "Inception’da kayıtlı" if is_active else "Inception’a ekle"
+            cells = [f'<td class="nova-add-cell"><button class="{button_class}" data-add-symbol="{escape(symbol)}" title="{button_title}" {"disabled" if is_active else ""}>{button_label}</button></td>']
+        else:
+            cells = []
         for column in columns:
             value = row[column]
             if column == "Hisse":
@@ -2424,8 +2487,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
         )
 
     table_height = min(900, max(220, 92 + (len(rows) * 58)))
-    components.html(
-        f"""
+    table_html = f"""
         <style>
             :root {{
                 color-scheme: dark;
@@ -2467,7 +2529,10 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             .nova-scan-table th.nova-sortable {{
                 cursor: ns-resize;
             }}
-            .nova-watchlist-sink {{ display:none; width:0; height:0; border:0; }}
+            .nova-add-head, .nova-add-cell {{ width:38px; text-align:center !important; padding-left:8px !important; padding-right:8px !important; }}
+            .nova-add-button {{ width:27px; height:27px; border-radius:7px; border:1px solid rgba(56,189,248,.65); color:#67d8ff; background:rgba(56,189,248,.08); font-size:18px; font-weight:800; line-height:1; cursor:pointer; }}
+            .nova-add-button:hover {{ color:#07111f; background:#38bdf8; box-shadow:0 0 14px rgba(56,189,248,.3); }}
+            .nova-add-button.added {{ color:#052e24; border-color:#34d399; background:#34d399; cursor:default; }}
             .nova-scan-table th.nova-sortable:hover,
             .nova-scan-table th.nova-sortable.active {{
                 color: var(--nova-text, #e5eefc);
@@ -2605,10 +2670,16 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
                 }});
             }})();
         </script>
-        """,
+        """
+    result = SCANNER_TABLE_COMPONENT(
+        key=table_key,
+        data={"html": table_html},
         height=table_height,
-        scrolling=True,
+        on_add_change=lambda: None,
     )
+    if enable_inception and result.add:
+        scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or st.session_state.get("smart_scan_horizon") or "1-5 gün")
+        render_scanner_watchlist_add([str(result.add)], scanner_horizon_to_watch_horizon(scanner_horizon))
 
 
 def render_scanner_disclosure() -> None:
@@ -2922,38 +2993,6 @@ def render_smart_scanner_page() -> None:
         max_volatility,
     )
 
-    if has_pro_access() and not filtered_table.empty:
-        load_current_user_pro_data()
-        active_symbols = {
-            str(item.get("symbol", "")).upper()
-            for item in st.session_state.get("inception_active", [])
-            if item.get("status", "active") == "active"
-        }
-        with st.container(border=True):
-            st.markdown("#### Inception’a Hisse Ekle")
-            st.caption("Hissenin yanındaki + düğmesine basın; doğrudan Inception’a kaydedilir.")
-            scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or selected_scan_horizon)
-            watch_horizon = scanner_horizon_to_watch_horizon(scanner_horizon)
-            header_cols = st.columns([0.45, 1.35, 1.0, 1.4, 1.15])
-            for column, label in zip(header_cols, ["", "Hisse", "Nova Skoru", "Sinyal", "Beklenen Getiri"]):
-                column.caption(label)
-            for row_index, (_, scanner_row) in enumerate(filtered_table.iterrows()):
-                symbol = str(scanner_row["Hisse"])
-                is_active = symbol.upper() in active_symbols
-                row_cols = st.columns([0.45, 1.35, 1.0, 1.4, 1.15], vertical_alignment="center")
-                with row_cols[0]:
-                    if st.button(
-                        "✓" if is_active else "+",
-                        key=f"smart_scanner_row_add_{row_index}_{symbol}",
-                        disabled=is_active,
-                        help="Inception’da kayıtlı" if is_active else f"{symbol} hissesini Inception’a ekle",
-                    ):
-                        render_scanner_watchlist_add([symbol], watch_horizon)
-                row_cols[1].markdown(f"**{symbol}**")
-                row_cols[2].write(f"{int(scanner_row['Nova Score'])}/100")
-                row_cols[3].write(str(scanner_row["Sonuç"]))
-                row_cols[4].write(f"%{float(scanner_row['Beklenen Getiri %']):.2f}")
-
     st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
     top_rows = filtered_table.head(10)
     if top_rows.empty:
@@ -2970,7 +3009,7 @@ def render_smart_scanner_page() -> None:
             "Haber Dahil Getiri %",
             "Beklenen Taşıma Süresi",
             "Trend",
-        ])
+        ], enable_inception=has_pro_access(), table_key="smart_scanner_top10")
 
     st.markdown("### Nova BIST Tarama Tablosu")
     smart_table = filtered_table.rename(columns={"Nova Score": "Nova Skoru", "Sonuç": "Sinyal", "Sat Riski %": "Risk"})
@@ -2990,7 +3029,7 @@ def render_smart_scanner_page() -> None:
     if smart_table.empty:
         st.info("Filtrelere uyan hisse bulunamadı.")
     else:
-        render_nova_bist_table(smart_table, smart_visible_columns)
+        render_nova_bist_table(smart_table, smart_visible_columns, enable_inception=has_pro_access(), table_key="smart_scanner_full")
 
     with st.expander("🎛 Gelişmiş Filtreler", expanded=False):
         filter_col_1, filter_col_2, filter_col_3, filter_col_4 = st.columns(4)

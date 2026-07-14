@@ -108,18 +108,19 @@ class InceptionTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(updated[0]["dynamic"]["expected_return"], 4.2)
 
-    def test_scanner_html_table_has_no_fake_inception_controls(self):
+    def test_scanner_table_uses_component_event_for_row_add(self):
         source = inspect.getsource(app.render_nova_bist_table)
         self.assertNotIn("scanner_add_batch", source)
-        self.assertNotIn("nova-add-link", source)
+        self.assertIn("data-add-symbol", source)
+        self.assertIn("SCANNER_TABLE_COMPONENT(", source)
+        self.assertIn("render_scanner_watchlist_add([str(result.add)]", source)
 
-    def test_scanner_uses_native_per_row_add_buttons(self):
+    def test_scanner_main_tables_enable_inception_without_separate_list(self):
         source = inspect.getsource(app.render_smart_scanner_page)
-        self.assertIn('"✓" if is_active else "+"', source)
-        self.assertIn("smart_scanner_row_add_", source)
-        self.assertIn("render_scanner_watchlist_add([symbol]", source)
-        self.assertNotIn("st.data_editor(", source)
-        self.assertNotIn("form_submit_button", source)
+        self.assertIn('table_key="smart_scanner_top10"', source)
+        self.assertIn('table_key="smart_scanner_full"', source)
+        self.assertNotIn("Inception’a Hisse Ekle", source)
+        self.assertNotIn("smart_scanner_row_add_", source)
 
     def test_scanner_batch_add_reuses_scan_results_without_downloading_prices(self):
         source = inspect.getsource(app.render_scanner_watchlist_add)
