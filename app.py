@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import requests
 import streamlit as st
@@ -22,6 +23,7 @@ import analytics as nova_analytics
 import decision_center as nova_decision
 import portfolio as nova_portfolio
 import scanner as nova_scanner
+import inception as nova_inception
 import user_store
 from theme import apply_terminal_theme, init_theme_state, set_theme_from_toggle, theme_tokens
 
@@ -41,7 +43,8 @@ SMART_SCANNER_HORIZONS = [
     "1-2 ay",
     "2-4 ay",
 ]
-SMART_SCANNER_CALC_VERSION = "smart-scanner-news-impact-v1"
+SMART_SCANNER_CALC_VERSION = "smart-scanner-dynamic-return-v2"
+SMART_SCAN_COOLDOWN_SECONDS = 5 * 60
 
 GLOBAL_TICKERS = [
     "AAPL",
@@ -79,11 +82,15 @@ TIMEFRAME_WINDOWS = {
 }
 
 PUBLIC_DASHBOARD_PAGE = "Dashboard"
+INCEPTION_PAGE = "Inception"
+ANALYSIS_REPORT_PAGE = "Analiz Raporu"
 SMART_SCANNER_PAGE = "🔐 Smart Scanner"
 PORTFOLIOS_PAGE = "Portföyler"
 YEB_PRO_PAGE = "⭐ YEB PRO"
 PAGES = [
     PUBLIC_DASHBOARD_PAGE,
+    INCEPTION_PAGE,
+    ANALYSIS_REPORT_PAGE,
     SMART_SCANNER_PAGE,
     PORTFOLIOS_PAGE,
     YEB_PRO_PAGE,
@@ -123,7 +130,93 @@ def current_timestamp_label() -> str:
     return now_istanbul().strftime("%d.%m.%Y %H:%M:%S")
 
 
+def smart_scan_cooldown_minutes(last_success_at: str | datetime | None, now: datetime | None = None) -> int:
+    if not last_success_at:
+        return 0
+    try:
+        last_success = (
+            last_success_at
+            if isinstance(last_success_at, datetime)
+            else datetime.fromisoformat(str(last_success_at))
+        )
+    except (TypeError, ValueError):
+        return 0
+    current = now or now_istanbul()
+    if last_success.tzinfo is None:
+        last_success = last_success.replace(tzinfo=app_timezone())
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=app_timezone())
+    remaining_seconds = SMART_SCAN_COOLDOWN_SECONDS - (current - last_success).total_seconds()
+    return max(0, math.ceil(remaining_seconds / 60))
+
+
+def market_data_time_from_table(table: pd.DataFrame) -> str | None:
+    if table.empty or "_market_data_time" not in table.columns:
+        return None
+    values = pd.to_datetime(table["_market_data_time"].dropna(), errors="coerce")
+    if values.empty or values.isna().all():
+        return None
+    return pd.Timestamp(values.max()).isoformat()
+
+
+def timestamp_display_label(value: str | datetime | None) -> str:
+    if not value:
+        return "-"
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return str(value)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(app_timezone())
+    return parsed.strftime("%d.%m.%Y %H:%M")
+
+
+def bist_market_is_open(now: datetime | None = None) -> bool:
+    current = now or now_istanbul()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=app_timezone())
+    current = current.astimezone(app_timezone())
+    minutes = current.hour * 60 + current.minute
+    return current.weekday() < 5 and 10 * 60 <= minutes < 18 * 60
+
+
+def store_successful_smart_scan(
+    state,
+    table: pd.DataFrame,
+    failed_tickers: list[str],
+    scanned_count: int,
+    selected_horizon: str,
+    completed_at: datetime,
+) -> bool:
+    if table is None or table.empty:
+        return False
+    state["smart_scanner_results"] = table
+    state["smart_scanner_failed_tickers"] = failed_tickers
+    state["smart_scanner_scanned_count"] = scanned_count
+    state["smart_scanner_scan_time"] = completed_at.strftime("%d.%m.%Y %H:%M:%S")
+    state["smart_scanner_last_success_at"] = completed_at.isoformat()
+    state["smart_scanner_market_data_time"] = market_data_time_from_table(table)
+    state["smart_scanner_result_status"] = "current"
+    state["smart_scanner_selected_horizon"] = selected_horizon
+    state["smart_scanner_calc_version"] = SMART_SCANNER_CALC_VERSION
+    return True
+
+
+def mark_smart_scan_failed(state) -> None:
+    if state.get("smart_scanner_results") is not None:
+        state["smart_scanner_result_status"] = "preserved"
+
+
+def smart_scan_result_is_successful(table: pd.DataFrame, timed_out: bool) -> bool:
+    return not timed_out and table is not None and not table.empty
+
+
 def init_access_state() -> None:
+    try:
+        secret_users = st.secrets.get("NOVA_USERS", os.environ.get("NOVA_USERS_JSON", ""))
+    except Exception:
+        secret_users = os.environ.get("NOVA_USERS_JSON", "")
+    user_store.configure_users(secret_users)
     if "is_authenticated" not in st.session_state:
         st.session_state.is_authenticated = False
     if "auth_user" not in st.session_state:
@@ -140,6 +233,12 @@ def init_access_state() -> None:
         st.session_state.yeb_closed_trades = []
     if "yeb_ai_watchlist" not in st.session_state:
         st.session_state.yeb_ai_watchlist = []
+    if "inception_active" not in st.session_state:
+        st.session_state.inception_active = []
+    if "inception_history" not in st.session_state:
+        st.session_state.inception_history = []
+    if "inception_metadata" not in st.session_state:
+        st.session_state.inception_metadata = []
     if "yeb_pro_module" not in st.session_state:
         st.session_state.yeb_pro_module = DEFAULT_PRO_MODULE
     restore_persistent_session()
@@ -227,6 +326,16 @@ def load_current_user_pro_data() -> None:
     st.session_state.yeb_open_positions = portfolio_data["open_positions"]
     st.session_state.yeb_closed_trades = portfolio_data["closed_trades"]
     st.session_state.yeb_ai_watchlist = portfolio_data["ai_watchlist"]
+    st.session_state.inception_active = portfolio_data["inception_active"]
+    st.session_state.inception_history = portfolio_data["inception_history"]
+    st.session_state.inception_metadata = portfolio_data["inception_metadata"]
+    st.session_state.inception_storage_ready = portfolio_data.get("inception_storage_ready", True)
+    if portfolio_data["ai_watchlist"] and not portfolio_data["inception_active"] and not portfolio_data["inception_history"]:
+        migrated_symbols = [str(item.get("symbol", "")).upper() for item in portfolio_data["ai_watchlist"] if item.get("symbol")]
+        st.session_state.inception_metadata = [
+            *portfolio_data["inception_metadata"],
+            {"kind": "legacy_ai_watchlist", "status": "pending_snapshot", "symbols": migrated_symbols},
+        ]
     st.session_state.yeb_simulation = simulation_data
     st.session_state.yeb_data_user = username
     st.session_state.yeb_persistent_data_loaded = True
@@ -245,6 +354,9 @@ def save_current_user_pro_data() -> None:
             st.session_state.get("yeb_open_positions", []),
             st.session_state.get("yeb_closed_trades", []),
             st.session_state.get("yeb_ai_watchlist", []),
+            st.session_state.get("inception_active", []),
+            st.session_state.get("inception_history", []),
+            st.session_state.get("inception_metadata", []),
         )
         simulation_saver = getattr(user_store, "save_simulation", None)
         if callable(simulation_saver):
@@ -266,6 +378,9 @@ def logout_current_user() -> None:
     st.session_state.yeb_open_positions = []
     st.session_state.yeb_closed_trades = []
     st.session_state.yeb_ai_watchlist = []
+    st.session_state.inception_active = []
+    st.session_state.inception_history = []
+    st.session_state.inception_metadata = []
     COOKIE_MANAGER.delete(AUTH_COOKIE_NAME)
 
 
@@ -359,6 +474,8 @@ def render_top_navigation() -> str:
         st.session_state.selected_page = PUBLIC_DASHBOARD_PAGE
     navigation_labels = {
         PUBLIC_DASHBOARD_PAGE: "Dashboard",
+        INCEPTION_PAGE: "Inception",
+        ANALYSIS_REPORT_PAGE: "Analiz Raporu",
         SMART_SCANNER_PAGE: "Smart Scanner",
         PORTFOLIOS_PAGE: "Portföyler",
         YEB_PRO_PAGE: "YEB PRO",
@@ -1651,40 +1768,43 @@ def render_one_month_trade_trends(data: pd.DataFrame, ticker: str) -> None:
     st.caption("Yeşil sütunlar günlük fiyat yükselişini, turuncu sütunlar günlük fiyat düşüşünü gösterir. Net alış-satış verisi değildir.")
 
 
-def render_add_to_ai_watchlist(ticker: str, symbols: pd.DataFrame, selected_horizon: str) -> None:
+def render_add_to_ai_watchlist(
+    ticker: str,
+    symbols: pd.DataFrame,
+    selected_horizon: str,
+    inception_snapshot: dict | None = None,
+) -> None:
     if not has_pro_access():
         return
 
     load_current_user_pro_data()
-    watchlist = st.session_state.get("yeb_ai_watchlist", [])
+    active = st.session_state.get("inception_active", [])
     already_added = any(
-        str(item.get("symbol", "")).upper() == ticker
-        and str(item.get("horizon", "")) == selected_horizon
-        for item in watchlist
+        str(item.get("symbol", "")).upper() == ticker and item.get("status", "active") == "active"
+        for item in active
     )
     button_col, status_col = st.columns([0.34, 0.66])
     with button_col:
         if st.button(
-            "+ AI Takip Listeme Ekle",
+            "+ Inception’a Ekle",
             key=f"add_watch_{ticker}_{selected_horizon}",
             type="primary",
             use_container_width=True,
             disabled=already_added,
         ):
-            labels = build_symbol_labels(symbols)
-            st.session_state.yeb_ai_watchlist.append(
-                {
-                    "symbol": ticker,
-                    "label": labels.get(ticker, ticker),
-                    "horizon": selected_horizon,
-                    "added_on": now_istanbul().date().isoformat(),
-                }
-            )
+            if inception_snapshot is None:
+                st.error("Başlangıç analizi oluşturulamadı.")
+                return
+            updated, added = nova_inception.add_record(active, inception_snapshot, "Dashboard", now_istanbul())
+            if not added:
+                st.warning(f"{ticker.replace('.IS', '')} zaten Inception’da takip ediliyor.")
+                return
+            st.session_state.inception_active = updated
             save_current_user_pro_data()
             st.rerun()
     with status_col:
         if already_added:
-            st.success(f"{ticker}, {selected_horizon} vadesiyle AI Takip Listende.")
+            st.success(f"{ticker.replace('.IS', '')} zaten Inception’da takip ediliyor.")
         else:
             st.caption(f"Seçili takip vadesi: {selected_horizon}")
 
@@ -2188,21 +2308,28 @@ def render_scanner_watchlist_add(symbol: str, horizon: str) -> None:
         st.error("AI takip listesi YEB PRO kullanıcılarına açıktır.")
         return
     load_current_user_pro_data()
-    watchlist = st.session_state.get("yeb_ai_watchlist", [])
+    active = st.session_state.get("inception_active", [])
     already_added = any(
-        str(item.get("symbol", "")).upper() == symbol and str(item.get("horizon", "")) == horizon
-        for item in watchlist
+        str(item.get("symbol", "")).upper() == symbol and item.get("status", "active") == "active" for item in active
     )
     if not already_added:
-        watchlist.append({
-            "symbol": symbol,
-            "label": symbol,
-            "horizon": horizon,
-            "added_on": now_istanbul().date().isoformat(),
-        })
-        st.session_state.yeb_ai_watchlist = watchlist
+        raw_data = nova_scanner.download_price_data(symbol, f"inception-add-{now_istanbul().isoformat()}")
+        scan_row = nova_scanner._scan_row(symbol, symbol, raw_data, horizon)
+        if scan_row is None:
+            st.error("Inception başlangıç kaydı için güncel veri alınamadı.")
+            return
+        price = float(scan_row["Son Fiyat"])
+        expected = float(scan_row["Beklenen Getiri %"])
+        snapshot = {
+            "symbol": symbol, "horizon": horizon, "price": price, "market_data_time": scan_row.get("_market_data_time"),
+            "expected_return": expected, "target_1": max(float(scan_row["Direnç"]), price * (1 + expected / 100)),
+            "target_2": None, "stop_loss": float(scan_row["Destek"]), "nova_score": scan_row["Nova Score"],
+            "confidence": scan_row["AI Güven Endeksi"], "indicators": {k: scan_row.get(k) for k in ("RSI", "MACD", "Volatilite", "Hacim Oranı")},
+            "sector": "Bilinmiyor", "market_state": scan_row["Trend"],
+        }
+        st.session_state.inception_active, _ = nova_inception.add_record(active, snapshot, "Smart Scanner", now_istanbul())
         save_current_user_pro_data()
-    st.success(f"{symbol}, {horizon} vadesiyle AI takip listesine eklendi." if not already_added else f"{symbol} zaten AI takip listende.")
+    st.success(f"{symbol}, {horizon} vadesiyle Inception’a eklendi." if not already_added else f"{symbol.replace('.IS', '')} zaten Inception’da takip ediliyor.")
     st.caption("Bu sekmeyi kapatıp Smart Scanner taramana devam edebilirsin.")
     components.html("<script>setTimeout(() => window.parent.close(), 1200);</script>", height=0)
 
@@ -2511,25 +2638,14 @@ def run_smart_market_scan(
     symbol_rows: tuple[tuple[str, str], ...],
     selected_horizon: str,
     max_seconds: int = 60,
+    scan_id: str | None = None,
 ) -> tuple[pd.DataFrame, list[str], bool, int]:
-    try:
-        return nova_scanner.scan_smart_market(
-            symbol_rows,
-            selected_horizon=selected_horizon,
-            max_seconds=max_seconds,
-        )
-    except TypeError:
-        table, failed_tickers, timed_out, scanned_count = nova_scanner.scan_smart_market(
-            symbol_rows,
-            max_seconds=max_seconds,
-        )
-        if not table.empty and "Beklenen Taşıma Süresi" in table.columns:
-            table = table.copy()
-            table["Beklenen Taşıma Süresi"] = nova_analytics.expected_holding_period(
-                pd.Series(dtype="float64"),
-                selected_horizon,
-        )
-        return table, failed_tickers, timed_out, scanned_count
+    return nova_scanner.scan_smart_market(
+        symbol_rows,
+        selected_horizon=selected_horizon,
+        max_seconds=max_seconds,
+        scan_id=scan_id,
+    )
 
 
 def normalize_smart_scanner_table(table: pd.DataFrame | None) -> pd.DataFrame:
@@ -2658,6 +2774,9 @@ def render_smart_scanner_page() -> None:
             "smart_scanner_failed_tickers",
             "smart_scanner_scanned_count",
             "smart_scanner_scan_time",
+            "smart_scanner_last_success_at",
+            "smart_scanner_market_data_time",
+            "smart_scanner_result_status",
             "smart_scanner_selected_horizon",
         ):
             st.session_state.pop(key, None)
@@ -2689,30 +2808,45 @@ def render_smart_scanner_page() -> None:
 
     scan_requested = st.button("Piyasayı Yeniden Tara", type="primary")
     if scan_requested:
-        with st.spinner("Smart Scanner CSV listesindeki tüm BIST hisselerini tarıyor..."):
-            scanner_table, failed_tickers, timed_out, scanned_count = run_smart_market_scan(
-                target_symbol_rows,
-                selected_scan_horizon,
-                max_seconds=60,
-            )
-        scanner_table = normalize_smart_scanner_table(scanner_table)
-        st.caption(f"{scanned_count} / {target_count} hisse tarandı")
-        if timed_out:
-            st.warning("Tarama süresi uzadı. İlk sonuçlar gösteriliyor.")
-        if scanner_table.empty:
-            st.error("Smart Scanner için veri alınamadı. Önceki sonuç varsa korunur.")
+        scan_started_at = now_istanbul()
+        cooldown_minutes = smart_scan_cooldown_minutes(
+            st.session_state.get("smart_scanner_last_success_at"),
+            scan_started_at,
+        )
+        if cooldown_minutes > 0:
+            st.warning(f"Yeni tarama için yaklaşık {cooldown_minutes} dakika bekleyin.")
         else:
-            st.session_state.smart_scanner_results = scanner_table
-            st.session_state.smart_scanner_failed_tickers = failed_tickers
-            st.session_state.smart_scanner_scanned_count = scanned_count
-            st.session_state.smart_scanner_scan_time = current_timestamp_label()
-            st.session_state.smart_scanner_selected_horizon = selected_scan_horizon
-            st.session_state.smart_scanner_calc_version = SMART_SCANNER_CALC_VERSION
+            with st.spinner("Smart Scanner CSV listesindeki tüm BIST hisselerini tarıyor..."):
+                scanner_table, failed_tickers, timed_out, scanned_count = run_smart_market_scan(
+                    target_symbol_rows,
+                    selected_scan_horizon,
+                    max_seconds=60,
+                    scan_id=scan_started_at.isoformat(),
+                )
+            scanner_table = normalize_smart_scanner_table(scanner_table)
+            st.caption(f"{scanned_count} / {target_count} hisse tarandı")
+            if timed_out:
+                st.warning("Tarama süresi doldu. Yarım kalan sonuçlar yeni tarama olarak kaydedilmedi.")
+            if not smart_scan_result_is_successful(scanner_table, timed_out):
+                mark_smart_scan_failed(st.session_state)
+                st.error("Tarama tamamlanamadı. Önceki sonuç korunuyor; yeni hesaplama zamanı yazılmadı.")
+            else:
+                scan_completed_at = now_istanbul()
+                store_successful_smart_scan(
+                    st.session_state,
+                    scanner_table,
+                    failed_tickers,
+                    scanned_count,
+                    selected_scan_horizon,
+                    scan_completed_at,
+                )
 
     scanner_table = normalize_smart_scanner_table(st.session_state.get("smart_scanner_results", pd.DataFrame()))
     failed_tickers = st.session_state.get("smart_scanner_failed_tickers", [])
     scanned_count = st.session_state.get("smart_scanner_scanned_count", len(symbol_rows))
     scan_time = st.session_state.get("smart_scanner_scan_time", "-")
+    market_data_time = st.session_state.get("smart_scanner_market_data_time")
+    result_status = st.session_state.get("smart_scanner_result_status", "preserved")
 
     if scanner_table is None or scanner_table.empty:
         st.info("Henüz tarama yapılmadı. Piyasayı taramak için butona basın.")
@@ -2720,6 +2854,14 @@ def render_smart_scanner_page() -> None:
         return
 
     render_smart_summary_cards(scanner_table, scanned_count, scan_time)
+    st.info(f"Güncel beklenen getiri — Son başarılı hesaplama: {scan_time}")
+    st.caption(f"Kullanılan piyasa verisinin zamanı: {timestamp_display_label(market_data_time)}")
+    if result_status == "current":
+        st.success("Gösterilen beklenen getiri son başarılı Smart Scanner taramasına aittir.")
+    else:
+        st.warning("Gösterilen tablo korunmuş eski sonuçtur; son deneme yeni ve başarılı bir hesaplama üretmedi.")
+    if not bist_market_is_open():
+        st.caption("Piyasa kapalı. Hesaplama, veri sağlayıcısındaki mevcut son işlem fiyatı ve teknik verilerle yapılmıştır.")
 
     trend_filter = st.session_state.get("smart_filter_trend", "Tümü")
     momentum_filter = st.session_state.get("smart_filter_momentum", "Tümü")
@@ -2929,14 +3071,25 @@ def render_dashboard_page() -> None:
     radar_scores_v12 = nova_analytics.score_breakdown(latest, general_score, confidence)
     tab_names = ["Genel Bakış", "Grafik ve Teknik Analiz"]
     if has_pro_access():
-        tab_names.append("AI Takip Listem")
+        tab_names.append("Inception / Analiz Raporu")
     dashboard_tabs = st.tabs(tab_names)
 
     with dashboard_tabs[0]:
         st.markdown("#### Vade Senaryoları")
         render_trade_horizon_cards(trade_table)
         render_pro_follow_window_detail(selected_horizon, selected_trade_row)
-        render_add_to_ai_watchlist(ticker, bist_symbols, selected_horizon)
+        sector = "Bilinmiyor" if selected_symbol_row.empty else str(selected_symbol_row.iloc[0].get("sector", "Bilinmiyor"))
+        inception_snapshot = {
+            "symbol": ticker, "horizon": selected_horizon, "price": display_price,
+            "market_data_time": pd.Timestamp(data.index.max()).isoformat(),
+            "expected_return": selected_expected_return, "target_1": first_target, "target_2": second_target,
+            "stop_loss": stop_loss, "nova_score": selected_score, "confidence": confidence,
+            "indicators": {"rsi": safe_float(latest.get("RSI14")), "macd": safe_float(latest.get("MACD")),
+                           "ema20": safe_float(latest.get("EMA20")), "ema50": safe_float(latest.get("EMA50")),
+                           "volatility": safe_float(latest.get("VOLATILITY20"))},
+            "sector": sector, "market_state": trend_text(latest),
+        }
+        render_add_to_ai_watchlist(ticker, bist_symbols, selected_horizon, inception_snapshot)
         render_one_month_trade_trends(data, ticker)
 
         st.markdown("#### Piyasa Özeti")
@@ -2997,7 +3150,18 @@ def render_dashboard_page() -> None:
 
     if has_pro_access():
         with dashboard_tabs[2]:
-            render_pro_ai_watchlist(ticker, data, bist_symbols, selected_horizon)
+            st.markdown("### Inception ve Analiz Raporu")
+            inception_col, report_col = st.columns(2)
+            with inception_col:
+                st.caption("Nova takip başlangıçlarını sabit snapshot ile izle.")
+                if st.button("Inception’ı Aç", use_container_width=True):
+                    st.session_state.selected_page = INCEPTION_PAGE
+                    st.rerun()
+            with report_col:
+                st.caption("Tamamlanan Nova takiplerinin geçmiş performansını incele.")
+                if st.button("Analiz Raporunu Aç", use_container_width=True):
+                    st.session_state.selected_page = ANALYSIS_REPORT_PAGE
+                    st.rerun()
 
     with st.expander("Veri kaynağı ve yasal bilgilendirme", expanded=False):
         st.caption("BIST hisse listesi yerel CSV dosyasından okunur.")
@@ -3168,6 +3332,9 @@ def render_login_page() -> bool:
         '<div class="nova-subtitle">Smart Scanner ücretsiz üyelik ile kullanılabilir.</div>',
         unsafe_allow_html=True,
     )
+    if not user_store.users_configured():
+        st.error("Giriş sistemi yapılandırılmadı. NOVA_USERS secret tanımı gereklidir.")
+        return False
     with st.form("smart_scanner_login_form"):
         username = st.text_input("Kullanıcı Adı", key="login_username")
         password = st.text_input("Şifre", type="password", key="login_password")
@@ -4227,9 +4394,169 @@ def render_yeb_pro_page() -> None:
         render_coming_soon_page(f"⭐ {module}")
 
 
+def inception_update_due(metadata: list[dict], now: datetime) -> bool:
+    last = next((item.get("last_success_at") for item in metadata if item.get("kind") == "update"), None)
+    if not last:
+        return True
+    try:
+        return (now - datetime.fromisoformat(str(last))).total_seconds() >= 300
+    except (TypeError, ValueError):
+        return True
+
+
+def update_inception_records(active: list[dict], now: datetime, downloader=nova_scanner.download_price_data) -> tuple[list[dict], bool, str | None]:
+    if not active:
+        return active, True, None
+    cycle_id = f"inception-{now.isoformat()}"
+    updated = []
+    market_times = []
+    for record in active:
+        try:
+            raw = downloader(record["symbol"], cycle_id)
+            used = raw.loc[raw.index >= pd.Timestamp(record["added_at"]).tz_localize(None)] if not raw.empty else raw
+            row = nova_scanner._scan_row(record["symbol"], record["symbol"], raw, record.get("horizon", "1-5 gün"))
+            if row is None or used.empty:
+                return active, False, None
+            updated.append(nova_inception.update_record(record, row, used, now))
+            if row.get("_market_data_time"):
+                market_times.append(row["_market_data_time"])
+        except Exception:
+            return active, False, None
+    newest = max(market_times) if market_times else None
+    return updated, True, newest
+
+
+def render_inception_page() -> None:
+    if not is_authenticated():
+        if not render_login_page():
+            return
+    load_current_user_pro_data()
+    st.title("INCEPTION")
+    st.caption("Nova takip kayıtlarıdır; gerçek pozisyon veya alım-satım talimatı değildir.")
+    if not st.session_state.get("inception_storage_ready", True):
+        st.warning("Inception Supabase migration bekliyor. Ekran incelenebilir; migration uygulanana kadar yeni Inception kayıtları kalıcı değildir.")
+    active = st.session_state.get("inception_active", [])
+    metadata = st.session_state.get("inception_metadata", [])
+    now = now_istanbul()
+    visit_id = st.session_state.get("inception_visit_id", "initial")
+    if active and inception_update_due(metadata, now) and st.session_state.get("inception_last_attempt_visit") != visit_id:
+        updated, success, market_time = update_inception_records(active, now)
+        st.session_state.inception_last_attempt_visit = visit_id
+        if success:
+            still_active, automatically_completed = [], []
+            for record in updated:
+                reason = nova_inception.automatic_completion_reason(record)
+                if reason:
+                    automatically_completed.append(nova_inception.complete_record(record, reason, now))
+                else:
+                    still_active.append(record)
+            st.session_state.inception_active = still_active
+            st.session_state.inception_history = [*st.session_state.get("inception_history", []), *automatically_completed]
+            metadata = [item for item in metadata if item.get("kind") != "update"]
+            metadata.append({"kind": "update", "last_success_at": now.isoformat(), "market_data_time": market_time, "status": "current"})
+            st.session_state.inception_metadata = metadata
+            save_current_user_pro_data()
+            active = still_active
+        else:
+            st.warning("Korunmuş eski sonuç — güncelleme tamamlanamadı; son başarılı zaman değiştirilmedi.")
+    update_meta = next((item for item in metadata if item.get("kind") == "update"), {})
+    st.info(f"Son başarılı güncelleme: {timestamp_display_label(update_meta.get('last_success_at'))}")
+    st.caption(f"Kullanılan piyasa verisi: {timestamp_display_label(update_meta.get('market_data_time'))}")
+    st.caption("Sonuç durumu: " + ("Güncel" if update_meta.get("status") == "current" else "Korunmuş eski sonuç"))
+    if not bist_market_is_open(now):
+        st.caption("Piyasa kapalı; mevcut son işlem verileri kullanılmıştır.")
+    if not active:
+        st.info("Aktif Inception kaydı bulunmuyor. Dashboard veya Smart Scanner’dan hisse ekleyebilirsiniz.")
+        return
+    rows = []
+    for record in active:
+        initial, dynamic = record["initial"], record.get("dynamic", {})
+        rows.append({"Sembol": record["symbol"], "Kaynak": record["source"], "Takibe Alınma Zamanı": timestamp_display_label(record["added_at"]),
+                     "Vade": record["horizon"], "Takip Günü": dynamic.get("horizon_day", "0/-"), "Başlangıç Fiyatı": initial["price"],
+                     "Güncel Fiyat": dynamic.get("price"), "İlk Beklenen Getiri %": initial["expected_return"],
+                     "Güncel Beklenen Getiri %": dynamic.get("expected_return"), "Gerçekleşen Getiri %": dynamic.get("return_pct"),
+                     "İlk Hedef": initial["target_1"], "Hedef Gerçekleşme %": dynamic.get("target_progress_pct"),
+                     "Hedefe Kalan %": dynamic.get("target_remaining_pct"), "İlk Stop": initial["stop_loss"],
+                     "Stopa Kalan %": dynamic.get("stop_remaining_pct"), "Takipte En Yüksek": dynamic.get("highest"),
+                     "Takipte En Düşük": dynamic.get("lowest"), "Maksimum Ters Hareket %": dynamic.get("max_adverse_pct"),
+                     "İlk Nova Güven": initial["confidence"], "Güncel Nova Güven": dynamic.get("confidence"),
+                     "Son Güncelleme": timestamp_display_label(dynamic.get("updated_at")), "Veri Durumu": dynamic.get("data_status", "Korunmuş eski")})
+    source_filter = st.selectbox("Kaynak filtresi", ["Tümü", "Dashboard", "Smart Scanner"])
+    table = pd.DataFrame(rows)
+    if source_filter != "Tümü": table = table[table["Kaynak"] == source_filter]
+    st.dataframe(table, use_container_width=True, hide_index=True)
+    selected = st.selectbox("İşlem yapılacak kayıt", [r["symbol"] for r in active])
+    selected_record = next(r for r in active if r["symbol"] == selected)
+    with st.expander("Detay Gör"):
+        st.json(selected_record)
+    action_col, remove_col = st.columns(2)
+    if action_col.button("Takibi Tamamla", use_container_width=True):
+        record = selected_record
+        completed = nova_inception.complete_record(record, "Kullanıcı tamamladı", now_istanbul())
+        st.session_state.inception_active = [r for r in active if r["id"] != record["id"]]
+        st.session_state.inception_history = [*st.session_state.get("inception_history", []), completed]
+        save_current_user_pro_data(); st.rerun()
+    if remove_col.button("Takipten Çıkar", use_container_width=True):
+        record = selected_record
+        completed = nova_inception.complete_record(record, "Kullanıcı takipten çıkardı", now_istanbul())
+        st.session_state.inception_active = [r for r in active if r["id"] != record["id"]]
+        st.session_state.inception_history = [*st.session_state.get("inception_history", []), completed]
+        save_current_user_pro_data(); st.rerun()
+
+
+def render_analysis_report_page() -> None:
+    if not is_authenticated():
+        if not render_login_page(): return
+    load_current_user_pro_data()
+    history = st.session_state.get("inception_history", [])
+    active = st.session_state.get("inception_active", [])
+    st.title("ANALİZ RAPORU")
+    st.caption("Nova’nın geçmiş Inception tahminlerini değerlendirir; gerçek kullanıcı pozisyonlarını içermez.")
+    metrics = nova_inception.report_metrics(history, len(active))
+    st.dataframe(pd.DataFrame([metrics]), use_container_width=True, hide_index=True)
+    if not history:
+        st.info("Rapor için tamamlanmış Inception kaydı bulunmuyor."); return
+    st.markdown("### Beklenen ve Gerçekleşen Getiri")
+    comparison_rows = []
+    for record in history:
+        outcome = record.get("outcome", {})
+        comparison_rows.append({"Sembol": record.get("symbol"), "İlk Beklenen Getiri %": outcome.get("initial_expected_return"),
+                                "Gerçekleşen Getiri %": outcome.get("actual_return"), "Mutlak Sapma %": abs(float(outcome.get("expected_actual_gap", 0))),
+                                "Yön Doğru": float(outcome.get("actual_return", 0)) > 0, "Hedef Gerçekleşti": outcome.get("target_reached"),
+                                "Maksimum Ters Hareket %": outcome.get("max_adverse_pct")})
+    st.dataframe(pd.DataFrame(comparison_rows), use_container_width=True, hide_index=True)
+    st.markdown("### Vade Analizi")
+    st.dataframe(pd.DataFrame(nova_inception.group_metrics(history, lambda r: r.get("horizon", "Bilinmiyor"))), use_container_width=True)
+    st.markdown("### Güven Skoru Analizi")
+    def confidence_band(r):
+        score = int(r.get("initial", {}).get("confidence", 0)); return "90-100" if score >= 90 else "80-89" if score >= 80 else "70-79" if score >= 70 else "60-69" if score >= 60 else "0-59"
+    st.dataframe(pd.DataFrame(nova_inception.group_metrics(history, confidence_band)), use_container_width=True)
+    st.markdown("### Kaynak Analizi")
+    st.dataframe(pd.DataFrame(nova_inception.group_metrics(history, lambda r: r.get("source", "Bilinmiyor"))), use_container_width=True)
+    st.markdown("### Sektör ve Sembol Analizi")
+    st.dataframe(pd.DataFrame(nova_inception.group_metrics(history, lambda r: r.get("initial", {}).get("sector", "Bilinmiyor"))), use_container_width=True)
+    st.dataframe(pd.DataFrame(nova_inception.group_metrics(history, lambda r: r.get("symbol", "Bilinmiyor"))), use_container_width=True)
+    st.markdown("### Başarısızlık Nedenleri")
+    failed = []
+    for r in history:
+        outcome = r.get("outcome", {})
+        if float(outcome.get("actual_return", 0)) >= 0: continue
+        reasons = ["Hedefe ulaşmadan takip tamamlandı"]
+        if float(outcome.get("max_adverse_pct", 0)) < -abs(float(outcome.get("initial_expected_return", 0))): reasons.append("Beklenen getiriye kıyasla maksimum ters hareket yüksek kaldı")
+        if int(r.get("initial", {}).get("confidence", 0)) >= 80: reasons.append("Güven skoru yüksek olmasına rağmen sonuç negatif oldu")
+        failed.append({"Sembol": r["symbol"], "Beklenen %": outcome.get("initial_expected_return"), "Gerçekleşen %": outcome.get("actual_return"),
+                       "Maksimum Ters %": outcome.get("max_adverse_pct"), "Olası veri destekli nedenler": "; ".join(reasons),
+                       "İncelenecek göstergeler": "Momentum, hacim, direnç ve sektör görünümü"})
+    st.dataframe(pd.DataFrame(failed), use_container_width=True, hide_index=True)
+
+
 def render_page(page: str) -> None:
     if page == PUBLIC_DASHBOARD_PAGE:
         render_dashboard_page()
+    elif page == INCEPTION_PAGE:
+        render_inception_page()
+    elif page == ANALYSIS_REPORT_PAGE:
+        render_analysis_report_page()
     elif page == SMART_SCANNER_PAGE:
         add_symbol = str(st.query_params.get("scanner_add", "")).strip().upper()
         if add_symbol:
@@ -4269,6 +4596,10 @@ def main() -> None:
         st.session_state.selected_page = SMART_SCANNER_PAGE
     render_app_header()
     selected_page = render_top_navigation()
+    if st.session_state.get("last_rendered_page") != selected_page:
+        if selected_page == INCEPTION_PAGE:
+            st.session_state.inception_visit_id = now_istanbul().isoformat()
+        st.session_state.last_rendered_page = selected_page
     render_page(selected_page)
 
 

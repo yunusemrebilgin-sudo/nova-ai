@@ -50,6 +50,13 @@ class UserPersistenceTests(unittest.TestCase):
         user_store.DATA_ROOT = self.original_root
         user_store.configure_supabase(self.original_url, self.original_key)
 
+    def test_credentials_are_runtime_configured_not_hardcoded(self):
+        source = Path(user_store.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("demo123", source)
+        self.assertNotIn("yeb2026-", source)
+        user_store.configure_users({"demo": {"password": "runtime-secret", "is_pro": True}})
+        self.assertEqual(user_store.authenticate("demo", "runtime-secret")["username"], "demo")
+
     def test_records_survive_application_restart(self):
         backend = SupabasePortfolioBackend()
         user_store.configure_supabase("https://example.supabase.co", "sb_secret_test")

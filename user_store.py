@@ -9,19 +9,8 @@ from typing import Any
 import requests
 
 
-USERS = {
-    "demo": {"password": "demo123", "is_pro": True},
-    "kullanici1": {"password": "yeb2026-01", "is_pro": True},
-    "kullanici2": {"password": "yeb2026-02", "is_pro": True},
-    "kullanici3": {"password": "yeb2026-03", "is_pro": True},
-    "kullanici4": {"password": "yeb2026-04", "is_pro": True},
-    "kullanici5": {"password": "yeb2026-05", "is_pro": True},
-    "kullanici6": {"password": "yeb2026-06", "is_pro": True},
-    "kullanici7": {"password": "yeb2026-07", "is_pro": True},
-    "kullanici8": {"password": "yeb2026-08", "is_pro": True},
-    "kullanici9": {"password": "yeb2026-09", "is_pro": True},
-    "kullanici10": {"password": "yeb2026-10", "is_pro": True},
-}
+USERS: dict[str, dict[str, Any]] = {}
+KNOWN_USERNAMES = {"demo", *(f"kullanici{index}" for index in range(1, 11))}
 
 DATA_ROOT = Path("data/user_data")
 SUPABASE_URL = ""
@@ -32,10 +21,37 @@ class PersistenceError(RuntimeError):
     """Raised when live user data cannot be read from or written to Supabase."""
 
 
+def configure_users(payload: Any) -> None:
+    """Load credentials at runtime; passwords must never be committed to source."""
+    global USERS
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    configured = {}
+    if isinstance(payload, dict):
+        for username, value in payload.items():
+            if not isinstance(value, dict) or not str(value.get("password", "")):
+                continue
+            configured[normalize_username(str(username))] = {
+                "password": str(value["password"]),
+                "is_pro": bool(value.get("is_pro", False)),
+            }
+    USERS = configured
+
+
+def users_configured() -> bool:
+    return bool(USERS)
+
+
 EMPTY_PORTFOLIO_DATA = {
     "open_positions": [],
     "closed_trades": [],
     "ai_watchlist": [],
+    "inception_active": [],
+    "inception_history": [],
+    "inception_metadata": [],
 }
 
 
@@ -95,7 +111,7 @@ def is_pro_user(username: str) -> bool:
 
 def user_data_dir(username: str) -> Path:
     normalized = normalize_username(username)
-    if normalized not in USERS:
+    if normalized not in KNOWN_USERNAMES:
         raise ValueError("Tanımsız kullanıcı.")
     path = DATA_ROOT / normalized
     path.mkdir(parents=True, exist_ok=True)
@@ -152,21 +168,33 @@ def save_user_list(username: str, file_name: str, rows: list[dict[str, Any]]) ->
 
 def load_user_portfolio_data(username: str) -> dict[str, list[dict[str, Any]]]:
     normalized = normalize_username(username)
-    if normalized not in USERS:
+    if normalized not in KNOWN_USERNAMES:
         raise ValueError("Tanımsız kullanıcı.")
     if supabase_enabled():
         try:
-            rows = _rest(
-                "user_portfolio_data",
-                params={"username": f"eq.{normalized}", "select": "open_positions,closed_trades,ai_watchlist"},
-            ).json()
+            storage_ready = True
+            try:
+                rows = _rest(
+                    "user_portfolio_data",
+                    params={"username": f"eq.{normalized}", "select": "open_positions,closed_trades,ai_watchlist,inception_active,inception_history,inception_metadata"},
+                ).json()
+            except requests.HTTPError:
+                storage_ready = False
+                rows = _rest(
+                    "user_portfolio_data",
+                    params={"username": f"eq.{normalized}", "select": "open_positions,closed_trades,ai_watchlist"},
+                ).json()
             if not rows:
-                return {key: [] for key in EMPTY_PORTFOLIO_DATA}
+                return {**{key: [] for key in EMPTY_PORTFOLIO_DATA}, "inception_storage_ready": storage_ready}
             row = rows[0]
             return {
                 "open_positions": _validate_list_payload(row.get("open_positions"), "open_positions"),
                 "closed_trades": _validate_list_payload(row.get("closed_trades"), "closed_trades"),
                 "ai_watchlist": _validate_list_payload(row.get("ai_watchlist"), "ai_watchlist"),
+                "inception_active": _validate_list_payload(row.get("inception_active", []), "inception_active"),
+                "inception_history": _validate_list_payload(row.get("inception_history", []), "inception_history"),
+                "inception_metadata": _validate_list_payload(row.get("inception_metadata", []), "inception_metadata"),
+                "inception_storage_ready": storage_ready,
             }
         except (requests.RequestException, KeyError, TypeError, ValueError, PersistenceError) as exc:
             raise PersistenceError("Pozisyon ve takip verileri Supabase'den okunamadı; mevcut kayıtlar korunuyor.") from exc
@@ -174,6 +202,10 @@ def load_user_portfolio_data(username: str) -> dict[str, list[dict[str, Any]]]:
         "open_positions": load_user_list(normalized, "open_positions.json"),
         "closed_trades": load_user_list(normalized, "closed_trades.json"),
         "ai_watchlist": load_user_list(normalized, "ai_watchlist.json"),
+        "inception_active": load_user_list(normalized, "inception_active.json"),
+        "inception_history": load_user_list(normalized, "inception_history.json"),
+        "inception_metadata": load_user_list(normalized, "inception_metadata.json"),
+        "inception_storage_ready": True,
     }
 
 
@@ -182,14 +214,20 @@ def save_user_portfolio_data(
     open_positions: list[dict[str, Any]],
     closed_trades: list[dict[str, Any]],
     ai_watchlist: list[dict[str, Any]],
+    inception_active: list[dict[str, Any]] | None = None,
+    inception_history: list[dict[str, Any]] | None = None,
+    inception_metadata: list[dict[str, Any]] | None = None,
 ) -> None:
     normalized = normalize_username(username)
-    if normalized not in USERS:
+    if normalized not in KNOWN_USERNAMES:
         raise ValueError("Tanımsız kullanıcı.")
     snapshot = {
         "open_positions": _validate_list_payload(open_positions, "open_positions"),
         "closed_trades": _validate_list_payload(closed_trades, "closed_trades"),
         "ai_watchlist": _validate_list_payload(ai_watchlist, "ai_watchlist"),
+        "inception_active": _validate_list_payload(inception_active or [], "inception_active"),
+        "inception_history": _validate_list_payload(inception_history or [], "inception_history"),
+        "inception_metadata": _validate_list_payload(inception_metadata or [], "inception_metadata"),
     }
     if supabase_enabled():
         try:
@@ -200,12 +238,26 @@ def save_user_portfolio_data(
                 prefer="resolution=merge-duplicates",
             )
             return
+        except requests.HTTPError:
+            try:
+                _rest(
+                    "user_portfolio_data", "POST",
+                    payload={"username": normalized, "open_positions": snapshot["open_positions"],
+                             "closed_trades": snapshot["closed_trades"], "ai_watchlist": snapshot["ai_watchlist"]},
+                    prefer="resolution=merge-duplicates",
+                )
+                return
+            except requests.RequestException as exc:
+                raise PersistenceError("Pozisyon ve takip verileri Supabase'e kaydedilemedi.") from exc
         except requests.RequestException as exc:
             raise PersistenceError("Pozisyon ve takip verileri Supabase'e kaydedilemedi.") from exc
     for key, file_name in (
         ("open_positions", "open_positions.json"),
         ("closed_trades", "closed_trades.json"),
         ("ai_watchlist", "ai_watchlist.json"),
+        ("inception_active", "inception_active.json"),
+        ("inception_history", "inception_history.json"),
+        ("inception_metadata", "inception_metadata.json"),
     ):
         save_user_list(normalized, file_name, snapshot[key])
 
@@ -216,7 +268,7 @@ def load_open_positions(username: str) -> list[dict[str, Any]]:
 
 def save_open_positions(username: str, positions: list[dict[str, Any]]) -> None:
     current = load_user_portfolio_data(username)
-    save_user_portfolio_data(username, positions, current["closed_trades"], current["ai_watchlist"])
+    save_user_portfolio_data(username, positions, current["closed_trades"], current["ai_watchlist"], current["inception_active"], current["inception_history"], current["inception_metadata"])
 
 
 def load_closed_trades(username: str) -> list[dict[str, Any]]:
@@ -225,7 +277,7 @@ def load_closed_trades(username: str) -> list[dict[str, Any]]:
 
 def save_closed_trades(username: str, trades: list[dict[str, Any]]) -> None:
     current = load_user_portfolio_data(username)
-    save_user_portfolio_data(username, current["open_positions"], trades, current["ai_watchlist"])
+    save_user_portfolio_data(username, current["open_positions"], trades, current["ai_watchlist"], current["inception_active"], current["inception_history"], current["inception_metadata"])
 
 
 def load_ai_watchlist(username: str) -> list[dict[str, Any]]:
@@ -235,7 +287,7 @@ def load_ai_watchlist(username: str) -> list[dict[str, Any]]:
 
 def save_ai_watchlist(username: str, watchlist: list[dict[str, Any]]) -> None:
     current = load_user_portfolio_data(username)
-    save_user_portfolio_data(username, current["open_positions"], current["closed_trades"], watchlist)
+    save_user_portfolio_data(username, current["open_positions"], current["closed_trades"], watchlist, current["inception_active"], current["inception_history"], current["inception_metadata"])
 
 
 def load_simulation(username: str) -> dict[str, Any]:

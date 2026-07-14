@@ -31,6 +31,12 @@ def _scan_row(
     news_impact = news.news_impact_percent(symbol, name)
     news_adjusted_return = round(max(1.0, min(35.0, expected_return + news_impact)), 1)
     portfolio_price_series = raw_data["Close"].dropna().astype(float).tolist()
+    market_data_time = None
+    if not raw_data.index.empty:
+        try:
+            market_data_time = pd.Timestamp(raw_data.index.max()).isoformat()
+        except (TypeError, ValueError):
+            market_data_time = str(raw_data.index.max())
     return {
         "Hisse": symbol,
         "Şirket": name,
@@ -54,11 +60,16 @@ def _scan_row(
         "Direnç": round(resistance, 2),
         # Hidden integration metadata: reuses the scan's existing price evidence.
         "_portfolio_price_series": portfolio_price_series,
+        # Hidden scan metadata: identifies the newest price observation used.
+        "_market_data_time": market_data_time,
     }
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def download_price_data(symbol: str) -> pd.DataFrame:
+def download_price_data(symbol: str, scan_id: str | None = None) -> pd.DataFrame:
+    # scan_id is intentionally part of the cache key. A permitted user scan gets
+    # a new id, while duplicate access inside that same scan can reuse the data.
+    del scan_id
     return yf.download(
         symbol,
         period="6mo",
@@ -71,9 +82,13 @@ def download_price_data(symbol: str) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def scan_smart_symbol(symbol: str, name: str, selected_horizon: str = "1-5 gün") -> dict[str, object] | None:
-    raw_data = download_price_data(symbol)
+def scan_smart_symbol(
+    symbol: str,
+    name: str,
+    selected_horizon: str = "1-5 gün",
+    scan_id: str | None = None,
+) -> dict[str, object] | None:
+    raw_data = download_price_data(symbol, scan_id)
     return _scan_row(symbol, name, raw_data, selected_horizon)
 
 
@@ -82,6 +97,7 @@ def scan_smart_market(
     selected_horizon: str = "1-5 gün",
     max_seconds: int = 60,
     progress_callback=None,
+    scan_id: str | None = None,
 ) -> tuple[pd.DataFrame, list[str], bool, int]:
     rows = []
     failed = []
@@ -95,7 +111,7 @@ def scan_smart_market(
             timed_out = True
             break
         try:
-            row = scan_smart_symbol(symbol, name, selected_horizon)
+            row = scan_smart_symbol(symbol, name, selected_horizon, scan_id)
         except Exception:
             row = None
         scanned += 1
