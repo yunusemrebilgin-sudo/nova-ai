@@ -108,15 +108,16 @@ class InceptionTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(updated[0]["dynamic"]["expected_return"], 4.2)
 
-    def test_scanner_add_links_queue_one_batch_and_only_persisted_rows_are_green(self):
+    def test_scanner_html_table_has_no_fake_inception_controls(self):
         source = inspect.getsource(app.render_nova_bist_table)
-        self.assertIn("scanner_add_batch", source)
-        self.assertIn("Seçilenleri Inception’a Kaydet", source)
-        self.assertNotIn("setTimeout", source)
-        self.assertNotIn('target="nova_watchlist_sink"', source)
-        self.assertNotIn("this.classList.add('added')", source)
-        self.assertIn('class="nova-add-link{added_class}"', source)
-        self.assertIn('st.session_state.get("inception_active", [])', source)
+        self.assertNotIn("scanner_add_batch", source)
+        self.assertNotIn("nova-add-link", source)
+
+    def test_scanner_uses_native_streamlit_batch_selection(self):
+        source = inspect.getsource(app.render_smart_scanner_page)
+        self.assertIn('st.multiselect(', source)
+        self.assertIn('"Seçilenleri Inception’a Kaydet"', source)
+        self.assertIn("render_scanner_watchlist_add(selected_for_inception", source)
 
     def test_scanner_batch_add_reuses_scan_results_without_downloading_prices(self):
         source = inspect.getsource(app.render_scanner_watchlist_add)

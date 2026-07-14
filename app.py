@@ -2368,12 +2368,6 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
 
 
 def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
-    if has_pro_access():
-        load_current_user_pro_data()
-    watched_symbols = {
-        str(item.get("symbol", "")).upper()
-        for item in st.session_state.get("inception_active", [])
-    }
     sortable_columns = {"AI Güven Endeksi", "Beklenen Getiri %", "Haber Etkisi %", "Haber Dahil Getiri %"}
     header_cells = []
     for index, column in enumerate(columns):
@@ -2384,15 +2378,12 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             )
         else:
             header_cells.append(f"<th>{escape(column)}</th>")
-    header = '<th class="nova-add-head">+</th>' + "".join(header_cells)
-    scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or st.session_state.get("smart_scan_horizon") or "1-5 gün")
-    watch_horizon = scanner_horizon_to_watch_horizon(scanner_horizon)
+    header = "".join(header_cells)
     rows = []
     mobile_cards = []
     for _, row in table[columns].iterrows():
         symbol = str(row.get("Hisse", ""))
-        added_class = " added" if symbol.upper() in watched_symbols else ""
-        cells = [f'<td class="nova-add-cell"><button class="nova-add-link{added_class}" type="button" data-symbol="{escape(symbol)}" title="Inception seçimine ekle">+</button></td>']
+        cells = []
         for column in columns:
             value = row[column]
             if column == "Hisse":
@@ -2420,8 +2411,7 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             f"""
             <article class="nova-mobile-stock">
                 <div class="nova-mobile-top">
-                    <span><button class="nova-add-link{added_class}" type="button" data-symbol="{escape(symbol)}" title="Inception seçimine ekle">+</button>
-                    <a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_blank" rel="noopener">{escape(symbol)}</a></span>
+                    <span><a class="nova-symbol-link" href="/?scanner_detail={escape(symbol)}" target="_blank" rel="noopener">{escape(symbol)}</a></span>
                     <span class="nova-score-strong">{score_value}/100</span>
                 </div>
                 <div class="nova-mobile-badges">{render_badge(signal_value)} {render_badge(risk_value)}</div>
@@ -2477,14 +2467,6 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             .nova-scan-table th.nova-sortable {{
                 cursor: ns-resize;
             }}
-            .nova-add-head, .nova-add-cell {{ width:34px; text-align:center !important; padding-left:8px !important; padding-right:8px !important; }}
-            .nova-add-link {{ display:inline-grid; place-items:center; width:26px; height:26px; border-radius:50%; color:#38bdf8; border:1px solid rgba(56,189,248,.45); background:rgba(56,189,248,.10); font-size:19px; font-weight:700; text-decoration:none; line-height:1; }}
-            .nova-add-link:hover {{ color:#07111f; background:#38bdf8; box-shadow:0 0 16px rgba(56,189,248,.32); }}
-            .nova-add-link.queued {{ color:#07111f; border-color:#fbbf24; background:#fbbf24; box-shadow:0 0 14px rgba(251,191,36,.28); }}
-            .nova-add-link.added {{ color:#052e24; border-color:#34d399; background:#34d399; box-shadow:0 0 14px rgba(52,211,153,.28); }}
-            .nova-batch-bar {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; padding:10px 12px; border:1px solid rgba(56,189,248,.25); border-radius:9px; background:rgba(15,23,42,.72); color:#93a4bc; font-size:.8rem; }}
-            .nova-batch-submit {{ padding:9px 14px; border-radius:8px; color:#07111f; background:#38bdf8; font-weight:800; text-decoration:none; white-space:nowrap; }}
-            .nova-batch-submit.disabled {{ pointer-events:none; opacity:.42; }}
             .nova-watchlist-sink {{ display:none; width:0; height:0; border:0; }}
             .nova-scan-table th.nova-sortable:hover,
             .nova-scan-table th.nova-sortable.active {{
@@ -2579,10 +2561,6 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
                 .nova-scan-table td {{ padding:11px 12px; }}
             }}
         </style>
-        <div class="nova-batch-bar">
-            <span>Hisseleri + ile seçin, ardından toplu olarak kaydedin.</span>
-            <a id="nova-batch-submit" class="nova-batch-submit disabled" href="#" target="_top">Seçilenleri Inception’a Kaydet (0)</a>
-        </div>
         <div class="nova-scan-table-wrap">
             <table class="nova-scan-table">
                 <thead><tr>{header}</tr></thead>
@@ -2594,25 +2572,6 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             (() => {{
                 const table = document.querySelector(".nova-scan-table");
                 if (!table) return;
-                const queued = new Set();
-                const submit = document.getElementById("nova-batch-submit");
-                const refreshSubmit = () => {{
-                    const count = queued.size;
-                    submit.textContent = `Seçilenleri Inception’a Kaydet (${{count}})`;
-                    submit.classList.toggle("disabled", count === 0);
-                    submit.href = count
-                        ? `/?scanner_add_batch=${{encodeURIComponent(Array.from(queued).join(","))}}&watch_horizon=${{encodeURIComponent("{watch_horizon}")}}`
-                        : "#";
-                }};
-                document.querySelectorAll(".nova-add-link:not(.added)").forEach((button) => {{
-                    button.addEventListener("click", () => {{
-                        const symbol = button.dataset.symbol;
-                        if (!symbol) return;
-                        if (queued.has(symbol)) queued.delete(symbol); else queued.add(symbol);
-                        document.querySelectorAll(`.nova-add-link[data-symbol="${{symbol}}"]`).forEach((item) => item.classList.toggle("queued", queued.has(symbol)));
-                        refreshSubmit();
-                    }});
-                }});
                 const tbody = table.querySelector("tbody");
                 const directions = {{}};
                 const numericValue = (row, index) => {{
@@ -2962,6 +2921,33 @@ def render_smart_scanner_page() -> None:
         min_volume_ratio,
         max_volatility,
     )
+
+    if has_pro_access() and not filtered_table.empty:
+        load_current_user_pro_data()
+        active_symbols = {
+            str(item.get("symbol", "")).upper()
+            for item in st.session_state.get("inception_active", [])
+            if item.get("status", "active") == "active"
+        }
+        selectable_symbols = [
+            str(symbol) for symbol in filtered_table["Hisse"].tolist()
+            if str(symbol).upper() not in active_symbols
+        ]
+        with st.container(border=True):
+            selected_for_inception = st.multiselect(
+                "Inception’a eklenecek hisseler",
+                selectable_symbols,
+                key="smart_scanner_inception_selection",
+                placeholder="Bir veya birden fazla hisse seçin",
+            )
+            if st.button(
+                "Seçilenleri Inception’a Kaydet",
+                key="smart_scanner_inception_save",
+                type="primary",
+                disabled=not selected_for_inception,
+            ):
+                scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or selected_scan_horizon)
+                render_scanner_watchlist_add(selected_for_inception, scanner_horizon_to_watch_horizon(scanner_horizon))
 
     st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
     top_rows = filtered_table.head(10)
