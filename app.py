@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from plotly.subplots import make_subplots
+from textwrap import dedent
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -4623,7 +4624,7 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
             pass
         target_label = "Hedef Gerçekleşti" if target_reached else _inception_display_percent(target_remaining)
         follow_label = f"{int(elapsed_days)} Gün" if isinstance(elapsed_days, (int, float)) and math.isfinite(float(elapsed_days)) else "—"
-        strips.append(f"""
+        strips.append(dedent(f"""
         <details class="nova-track-strip">
           <summary>
             <div class="nova-track-identity"><span class="nova-track-dot {status_class}"></span><div><strong>{symbol}</strong><small>{source} • {horizon}</small></div></div>
@@ -4653,8 +4654,8 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
             <span><small>Gerçekleşen</small><b>{_inception_display_percent(realized, signed=True)}</b></span>
             <span><small>Kaynak</small><b>{source}</b></span>
           </div>
-        </details>""")
-    st.markdown(f"""
+        </details>""").strip())
+    st.markdown(dedent(f"""
     <style>
       .nova-track-list {{display:flex;flex-direction:column;gap:8px;width:100%;}}
       .nova-track-strip {{border:1px solid rgba(148,163,184,.2);border-radius:10px;background:rgba(8,18,33,.72);overflow:hidden;}}
@@ -4682,7 +4683,7 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
         .nova-track-metrics strong {{font-size:.76rem;white-space:normal;}}
         .nova-track-detail {{grid-template-columns:repeat(2,minmax(0,1fr));padding:10px 12px;}}
       }}
-    </style><div class="nova-track-list">{''.join(strips)}</div>""", unsafe_allow_html=True)
+    </style><div class="nova-track-list">{''.join(strips)}</div>""").strip(), unsafe_allow_html=True)
 
 
 def render_inception_page() -> None:

@@ -160,6 +160,7 @@ class InceptionTests(unittest.TestCase):
         self.assertNotIn("st.dataframe(", page_source)
         self.assertIn("render_inception_tracking_strips", page_source)
         self.assertIn("nova-track-strip", strip_source)
+        self.assertIn("dedent(", strip_source)
         self.assertIn("grid-template-columns:16% 48% 36%", strip_source)
         self.assertIn("@media(max-width:760px)", strip_source)
 
