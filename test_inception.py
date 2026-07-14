@@ -115,15 +115,12 @@ class InceptionTests(unittest.TestCase):
 
     def test_scanner_uses_native_streamlit_batch_selection(self):
         source = inspect.getsource(app.render_smart_scanner_page)
-        self.assertIn('st.multiselect(', source)
+        self.assertIn('st.data_editor(', source)
+        self.assertIn('CheckboxColumn("Ekle"', source)
+        self.assertIn('st.form("smart_scanner_inception_form"', source)
         self.assertIn('"Seçilenleri Inception’a Kaydet"', source)
         self.assertIn("render_scanner_watchlist_add(selected_for_inception", source)
-
-    def test_scanner_has_native_quick_add_buttons(self):
-        source = inspect.getsource(app.render_smart_scanner_page)
-        self.assertIn('f"＋ {symbol.replace', source)
-        self.assertIn("render_scanner_watchlist_add([symbol]", source)
-        self.assertIn("disabled=is_active", source)
+        self.assertNotIn("smart_scanner_quick_add_", source)
 
     def test_scanner_batch_add_reuses_scan_results_without_downloading_prices(self):
         source = inspect.getsource(app.render_scanner_watchlist_add)

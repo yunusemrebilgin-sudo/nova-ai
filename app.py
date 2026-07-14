@@ -2929,41 +2929,46 @@ def render_smart_scanner_page() -> None:
             for item in st.session_state.get("inception_active", [])
             if item.get("status", "active") == "active"
         }
-        selectable_symbols = [
-            str(symbol) for symbol in filtered_table["Hisse"].tolist()
-            if str(symbol).upper() not in active_symbols
-        ]
         with st.container(border=True):
-            st.markdown("**Hızlı Inception ekleme**")
-            st.caption("Aşağıdaki + düğmelerinden istediğiniz hisseyi doğrudan ekleyebilirsiniz.")
-            top_symbols = [str(symbol) for symbol in filtered_table.head(10)["Hisse"].tolist()]
-            quick_columns = st.columns(5)
+            st.markdown("#### Inception’a Hisse Ekle")
+            st.caption("Listeden istediğiniz sayıda hisseyi işaretleyip tek seferde kaydedebilirsiniz.")
+            selector_source = filtered_table.loc[
+                ~filtered_table["Hisse"].astype(str).str.upper().isin(active_symbols),
+                ["Hisse", "Nova Score", "Sonuç", "Beklenen Getiri %"],
+            ].copy()
+            selector_source.insert(0, "Ekle", False)
             scanner_horizon = str(st.session_state.get("smart_scanner_selected_horizon") or selected_scan_horizon)
             watch_horizon = scanner_horizon_to_watch_horizon(scanner_horizon)
-            for index, symbol in enumerate(top_symbols):
-                is_active = symbol.upper() in active_symbols
-                with quick_columns[index % 5]:
-                    if st.button(
-                        f"✓ {symbol.replace('.IS', '')}" if is_active else f"＋ {symbol.replace('.IS', '')}",
-                        key=f"smart_scanner_quick_add_{symbol}",
-                        disabled=is_active,
+            if selector_source.empty:
+                st.success("Görüntülenen hisselerin tamamı Inception’da kayıtlı.")
+            else:
+                with st.form("smart_scanner_inception_form", clear_on_submit=True):
+                    selector = st.data_editor(
+                        selector_source,
+                        key="smart_scanner_inception_editor",
+                        hide_index=True,
                         use_container_width=True,
-                    ):
-                        render_scanner_watchlist_add([symbol], watch_horizon)
-            st.divider()
-            selected_for_inception = st.multiselect(
-                "Çoklu ekleme",
-                selectable_symbols,
-                key="smart_scanner_inception_selection",
-                placeholder="Bir veya birden fazla hisse seçin",
-            )
-            if st.button(
-                "Seçilenleri Inception’a Kaydet",
-                key="smart_scanner_inception_save",
-                type="primary",
-                disabled=not selected_for_inception,
-            ):
-                render_scanner_watchlist_add(selected_for_inception, watch_horizon)
+                        height=min(520, 38 + len(selector_source) * 35),
+                        disabled=["Hisse", "Nova Score", "Sonuç", "Beklenen Getiri %"],
+                        column_config={
+                            "Ekle": st.column_config.CheckboxColumn("Ekle", help="Inception’a eklenecek hisseleri işaretleyin."),
+                            "Hisse": st.column_config.TextColumn("Hisse"),
+                            "Nova Score": st.column_config.NumberColumn("Nova Skoru", format="%d/100"),
+                            "Sonuç": st.column_config.TextColumn("Sinyal"),
+                            "Beklenen Getiri %": st.column_config.NumberColumn("Beklenen Getiri %", format="%.2f"),
+                        },
+                    )
+                    submit_inception = st.form_submit_button(
+                        "Seçilenleri Inception’a Kaydet",
+                        type="primary",
+                        use_container_width=True,
+                    )
+                if submit_inception:
+                    selected_for_inception = selector.loc[selector["Ekle"], "Hisse"].astype(str).tolist()
+                    if not selected_for_inception:
+                        st.warning("Kaydetmek için en az bir hisseyi işaretleyin.")
+                    else:
+                        render_scanner_watchlist_add(selected_for_inception, watch_horizon)
 
     st.markdown("### 🔥 Bugünün En Güçlü 10 Hissesi")
     top_rows = filtered_table.head(10)
