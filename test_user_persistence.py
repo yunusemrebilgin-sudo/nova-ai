@@ -63,6 +63,20 @@ class UserPersistenceTests(unittest.TestCase):
         user_store.configure_users(users)
         self.assertIsNotNone(user_store.authenticate("kullanici1", "runtime-secret"))
 
+    def test_inception_compat_storage_preserves_watchlist_and_round_trips(self):
+        snapshot = {
+            "ai_watchlist": [{"symbol": "LEGACY.IS"}],
+            "inception_active": [{"id": "active-1", "symbol": "ASTOR.IS"}],
+            "inception_history": [{"id": "history-1"}],
+            "inception_metadata": [{"kind": "update"}],
+        }
+        encoded = user_store._encode_inception_compat(snapshot)
+        watchlist, decoded = user_store._decode_inception_compat(encoded)
+        self.assertEqual(watchlist, snapshot["ai_watchlist"])
+        self.assertEqual(decoded["inception_active"], snapshot["inception_active"])
+        self.assertEqual(decoded["inception_history"], snapshot["inception_history"])
+        self.assertEqual(decoded["inception_metadata"], snapshot["inception_metadata"])
+
     def test_records_survive_application_restart(self):
         backend = SupabasePortfolioBackend()
         user_store.configure_supabase("https://example.supabase.co", "sb_secret_test")

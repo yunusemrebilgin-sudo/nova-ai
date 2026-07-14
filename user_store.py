@@ -46,6 +46,29 @@ def users_configured() -> bool:
     return bool(USERS)
 
 
+INCEPTION_COMPAT_KEY = "_nova_inception_kind"
+
+
+def _decode_inception_compat(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    watchlist, decoded = [], {"inception_active": [], "inception_history": [], "inception_metadata": []}
+    kind_to_field = {"active": "inception_active", "history": "inception_history", "metadata": "inception_metadata"}
+    for row in rows:
+        field = kind_to_field.get(str(row.get(INCEPTION_COMPAT_KEY, "")))
+        value = row.get("data")
+        if field and isinstance(value, dict):
+            decoded[field].append(dict(value))
+        else:
+            watchlist.append(dict(row))
+    return watchlist, decoded
+
+
+def _encode_inception_compat(snapshot: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in snapshot["ai_watchlist"] if INCEPTION_COMPAT_KEY not in row]
+    for field, kind in (("inception_active", "active"), ("inception_history", "history"), ("inception_metadata", "metadata")):
+        rows.extend({INCEPTION_COMPAT_KEY: kind, "data": dict(value)} for value in snapshot[field])
+    return rows
+
+
 EMPTY_PORTFOLIO_DATA = {
     "open_positions": [],
     "closed_trades": [],
@@ -188,14 +211,17 @@ def load_user_portfolio_data(username: str) -> dict[str, list[dict[str, Any]]]:
             if not rows:
                 return {**{key: [] for key in EMPTY_PORTFOLIO_DATA}, "inception_storage_ready": storage_ready}
             row = rows[0]
+            raw_watchlist = _validate_list_payload(row.get("ai_watchlist"), "ai_watchlist")
+            compat_watchlist, compat_data = _decode_inception_compat(raw_watchlist)
             return {
                 "open_positions": _validate_list_payload(row.get("open_positions"), "open_positions"),
                 "closed_trades": _validate_list_payload(row.get("closed_trades"), "closed_trades"),
-                "ai_watchlist": _validate_list_payload(row.get("ai_watchlist"), "ai_watchlist"),
-                "inception_active": _validate_list_payload(row.get("inception_active", []), "inception_active"),
-                "inception_history": _validate_list_payload(row.get("inception_history", []), "inception_history"),
-                "inception_metadata": _validate_list_payload(row.get("inception_metadata", []), "inception_metadata"),
+                "ai_watchlist": compat_watchlist,
+                "inception_active": _validate_list_payload(row.get("inception_active", compat_data["inception_active"]), "inception_active"),
+                "inception_history": _validate_list_payload(row.get("inception_history", compat_data["inception_history"]), "inception_history"),
+                "inception_metadata": _validate_list_payload(row.get("inception_metadata", compat_data["inception_metadata"]), "inception_metadata"),
                 "inception_storage_ready": storage_ready,
+                "inception_storage_mode": "columns" if storage_ready else "compat",
             }
         except (requests.RequestException, KeyError, TypeError, ValueError, PersistenceError) as exc:
             raise PersistenceError("Pozisyon ve takip verileri Supabase'den okunamadı; mevcut kayıtlar korunuyor.") from exc
@@ -244,7 +270,7 @@ def save_user_portfolio_data(
                 _rest(
                     "user_portfolio_data", "POST",
                     payload={"username": normalized, "open_positions": snapshot["open_positions"],
-                             "closed_trades": snapshot["closed_trades"], "ai_watchlist": snapshot["ai_watchlist"]},
+                             "closed_trades": snapshot["closed_trades"], "ai_watchlist": _encode_inception_compat(snapshot)},
                     prefer="resolution=merge-duplicates",
                 )
                 return

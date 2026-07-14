@@ -332,6 +332,7 @@ def load_current_user_pro_data() -> None:
     st.session_state.inception_history = portfolio_data["inception_history"]
     st.session_state.inception_metadata = portfolio_data["inception_metadata"]
     st.session_state.inception_storage_ready = portfolio_data.get("inception_storage_ready", True)
+    st.session_state.inception_storage_mode = portfolio_data.get("inception_storage_mode", "columns")
     if portfolio_data["ai_watchlist"] and not portfolio_data["inception_active"] and not portfolio_data["inception_history"]:
         migrated_symbols = [str(item.get("symbol", "")).upper() for item in portfolio_data["ai_watchlist"] if item.get("symbol")]
         st.session_state.inception_metadata = [
@@ -4454,7 +4455,7 @@ def render_inception_page() -> None:
     st.title("INCEPTION")
     st.caption("Nova takip kayıtlarıdır; gerçek pozisyon veya alım-satım talimatı değildir.")
     if not st.session_state.get("inception_storage_ready", True):
-        st.warning("Inception Supabase migration bekliyor. Ekran incelenebilir; migration uygulanana kadar yeni Inception kayıtları kalıcı değildir.")
+        st.info("Inception uyumluluk depolaması aktif. Kayıtlar mevcut Supabase snapshot alanında kalıcı olarak korunuyor.")
     active = st.session_state.get("inception_active", [])
     metadata = st.session_state.get("inception_metadata", [])
     now = now_istanbul()
@@ -4619,6 +4620,7 @@ def main() -> None:
     if st.session_state.get("last_rendered_page") != selected_page:
         if selected_page == INCEPTION_PAGE:
             st.session_state.inception_visit_id = now_istanbul().isoformat()
+            st.session_state.yeb_persistent_data_loaded = False
         st.session_state.last_rendered_page = selected_page
     render_page(selected_page)
 
