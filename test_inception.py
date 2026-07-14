@@ -154,6 +154,25 @@ class InceptionTests(unittest.TestCase):
         self.assertIn("on_click=navigate_to_page", source)
         self.assertNotIn("st.session_state.selected_page =", source)
 
+    def test_inception_uses_compact_tracking_strips_not_dataframe(self):
+        page_source = inspect.getsource(app.render_inception_page)
+        strip_source = inspect.getsource(app.render_inception_tracking_strips)
+        self.assertNotIn("st.dataframe(", page_source)
+        self.assertIn("render_inception_tracking_strips", page_source)
+        self.assertIn("nova-track-strip", strip_source)
+        self.assertIn("grid-template-columns:16% 48% 36%", strip_source)
+        self.assertIn("@media(max-width:760px)", strip_source)
+
+    def test_inception_missing_values_render_as_dash(self):
+        self.assertEqual(app._inception_display_number(None), "—")
+        self.assertEqual(app._inception_display_percent(None), "—")
+
+    def test_inception_sorting_and_summary_options_are_present(self):
+        source = inspect.getsource(app.render_inception_page)
+        for label in ("Hedefe en yakın", "En yüksek gerçekleşen getiri", "En düşük gerçekleşen getiri", "Sembol"):
+            self.assertIn(label, source)
+        self.assertIn("Hedefe Ulaşan", source)
+
 
 if __name__ == "__main__":
     unittest.main()

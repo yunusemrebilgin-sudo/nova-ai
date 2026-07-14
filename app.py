@@ -4554,6 +4554,137 @@ def update_inception_records(active: list[dict], now: datetime, downloader=nova_
     return updated, True, newest
 
 
+def _inception_display_number(value: object, digits: int = 2) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(number):
+        return "—"
+    return f"{number:.{digits}f}"
+
+
+def _inception_display_percent(value: object, *, signed: bool = False) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(number):
+        return "—"
+    prefix = "+" if signed and number > 0 else ""
+    return f"{prefix}%{number:.1f}"
+
+
+def _inception_price_positions(start: object, current: object, target: object) -> tuple[float, float, float]:
+    values = []
+    for value in (start, current, target):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = math.nan
+        values.append(parsed)
+    finite = [value for value in values if math.isfinite(value)]
+    if len(finite) < 2 or max(finite) == min(finite):
+        return 6.0, 50.0, 94.0
+    low, high = min(finite), max(finite)
+    positions = []
+    for value, fallback in zip(values, (6.0, 50.0, 94.0)):
+        if not math.isfinite(value):
+            positions.append(fallback)
+        else:
+            positions.append(max(4.0, min(96.0, 4.0 + ((value - low) / (high - low)) * 92.0)))
+    return tuple(positions)
+
+
+def render_inception_tracking_strips(records: list[dict]) -> None:
+    strips = []
+    for record in records:
+        initial, dynamic = record.get("initial", {}), record.get("dynamic", {})
+        symbol = escape(str(record.get("symbol", "—")))
+        source = escape(str(record.get("source", "—")))
+        horizon = escape(str(record.get("horizon", "—")))
+        start_price = initial.get("price")
+        current_price = dynamic.get("price")
+        current_target = dynamic.get("technical_target", initial.get("target_1"))
+        realized = dynamic.get("return_pct")
+        current_expected = dynamic.get("expected_return")
+        target_remaining = dynamic.get("target_remaining_pct")
+        elapsed_days = dynamic.get("elapsed_days")
+        start_pos, current_pos, target_pos = _inception_price_positions(start_price, current_price, current_target)
+        try:
+            realized_number = float(realized)
+        except (TypeError, ValueError):
+            realized_number = math.nan
+        status_class = "neutral" if not math.isfinite(realized_number) or abs(realized_number) < 0.05 else "positive" if realized_number > 0 else "negative"
+        target_reached = bool(dynamic.get("target_touched"))
+        try:
+            target_reached = target_reached or float(current_price) >= float(current_target)
+        except (TypeError, ValueError):
+            pass
+        target_label = "Hedef Gerçekleşti" if target_reached else _inception_display_percent(target_remaining)
+        follow_label = f"{int(elapsed_days)} Gün" if isinstance(elapsed_days, (int, float)) and math.isfinite(float(elapsed_days)) else "—"
+        strips.append(f"""
+        <details class="nova-track-strip">
+          <summary>
+            <div class="nova-track-identity"><span class="nova-track-dot {status_class}"></span><div><strong>{symbol}</strong><small>{source} • {horizon}</small></div></div>
+            <div class="nova-price-track">
+              <div class="nova-track-line"></div>
+              <span class="nova-price-marker start" style="left:{start_pos:.2f}%">●</span>
+              <span class="nova-price-marker current" style="left:{current_pos:.2f}%">▲</span>
+              <span class="nova-price-marker target" style="left:{target_pos:.2f}%">◎</span>
+              <div class="nova-track-prices"><span>Başlangıç {_inception_display_number(start_price)}</span><span>Güncel {_inception_display_number(current_price)}</span><span>Hedef {_inception_display_number(current_target)}</span></div>
+            </div>
+            <div class="nova-track-metrics">
+              <div><small>Gerçekleşen</small><strong class="{status_class}">{_inception_display_percent(realized, signed=True)}</strong></div>
+              <div><small>Güncel Beklenti</small><strong>{_inception_display_percent(current_expected)}</strong></div>
+              <div><small>Hedefe Kalan</small><strong>{target_label}</strong></div>
+              <div><small>Takip</small><strong>{follow_label}</strong></div>
+            </div>
+          </summary>
+          <div class="nova-track-detail">
+            <span><small>Takibe Alınma</small><b>{escape(timestamp_display_label(record.get('added_at')))}</b></span>
+            <span><small>Vade</small><b>{horizon}</b></span>
+            <span><small>İlk Beklenti</small><b>{_inception_display_percent(initial.get('expected_return'))}</b></span>
+            <span><small>Güncel Beklenti</small><b>{_inception_display_percent(current_expected)}</b></span>
+            <span><small>İlk Hedef</small><b>{_inception_display_number(initial.get('target_1'))}</b></span>
+            <span><small>Güncel Hedef</small><b>{_inception_display_number(current_target)}</b></span>
+            <span><small>Başlangıç</small><b>{_inception_display_number(start_price)}</b></span>
+            <span><small>Güncel</small><b>{_inception_display_number(current_price)}</b></span>
+            <span><small>Gerçekleşen</small><b>{_inception_display_percent(realized, signed=True)}</b></span>
+            <span><small>Kaynak</small><b>{source}</b></span>
+          </div>
+        </details>""")
+    st.markdown(f"""
+    <style>
+      .nova-track-list {{display:flex;flex-direction:column;gap:8px;width:100%;}}
+      .nova-track-strip {{border:1px solid rgba(148,163,184,.2);border-radius:10px;background:rgba(8,18,33,.72);overflow:hidden;}}
+      .nova-track-strip summary {{list-style:none;display:grid;grid-template-columns:16% 48% 36%;align-items:center;min-height:88px;padding:8px 16px;cursor:pointer;}}
+      .nova-track-strip summary::-webkit-details-marker {{display:none;}}
+      .nova-track-identity {{display:flex;align-items:center;gap:9px;min-width:0;}}
+      .nova-track-identity strong {{display:block;color:#e8f1ff;font-size:1rem;line-height:1.15;}}
+      .nova-track-identity small,.nova-track-metrics small,.nova-track-detail small {{display:block;color:#8293aa;font-size:.68rem;}}
+      .nova-track-dot {{width:8px;height:8px;border-radius:50%;background:#64748b;flex:0 0 auto;}}
+      .nova-track-dot.positive {{background:#22c55e;}} .nova-track-dot.negative {{background:#ef4444;}}
+      .nova-price-track {{position:relative;height:62px;margin:0 22px;}}
+      .nova-track-line {{position:absolute;left:4%;right:4%;top:22px;height:1px;background:rgba(148,163,184,.52);}}
+      .nova-price-marker {{position:absolute;top:12px;transform:translateX(-50%);font-size:14px;color:#94a3b8;}}
+      .nova-price-marker.current {{color:#38bdf8;top:10px;}} .nova-price-marker.target {{color:#cbd5e1;}}
+      .nova-track-prices {{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:space-between;color:#8fa0b6;font-size:.67rem;}}
+      .nova-track-metrics {{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}}
+      .nova-track-metrics strong {{display:block;color:#e5eefc;font-size:.87rem;margin-top:3px;white-space:nowrap;}}
+      .nova-track-metrics strong.positive {{color:#34d399;}} .nova-track-metrics strong.negative {{color:#fb7185;}} .nova-track-metrics strong.neutral {{color:#94a3b8;}}
+      .nova-track-detail {{border-top:1px solid rgba(148,163,184,.16);display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:12px 18px;background:rgba(2,6,23,.22);}}
+      .nova-track-detail b {{display:block;color:#dbe7f7;font-size:.78rem;margin-top:3px;font-weight:650;}}
+      @media(max-width:760px) {{
+        .nova-track-strip summary {{grid-template-columns:1fr;gap:6px;min-height:0;padding:10px 12px;}}
+        .nova-price-track {{margin:0 5px;height:52px;}}
+        .nova-track-metrics {{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;}}
+        .nova-track-metrics strong {{font-size:.76rem;white-space:normal;}}
+        .nova-track-detail {{grid-template-columns:repeat(2,minmax(0,1fr));padding:10px 12px;}}
+      }}
+    </style><div class="nova-track-list">{''.join(strips)}</div>""", unsafe_allow_html=True)
+
+
 def render_inception_page() -> None:
     if not is_authenticated():
         if not render_login_page():
@@ -4596,27 +4727,46 @@ def render_inception_page() -> None:
     if not active:
         st.info("Aktif Inception kaydı bulunmuyor. Dashboard veya Smart Scanner’dan hisse ekleyebilirsiniz.")
         return
-    rows = []
-    for record in active:
-        initial, dynamic = record["initial"], record.get("dynamic", {})
-        rows.append({"Sembol": record["symbol"], "Kaynak": record["source"], "Takibe Alınma Zamanı": timestamp_display_label(record["added_at"]),
-                     "Vade": record["horizon"], "Takip Günü": dynamic.get("horizon_day", "0/-"), "Başlangıç Fiyatı": initial["price"],
-                     "Güncel Fiyat": dynamic.get("price"), "İlk Beklenen Getiri %": initial["expected_return"],
-                     "Güncel Beklenen Getiri %": dynamic.get("expected_return"), "Gerçekleşen Getiri %": dynamic.get("return_pct"),
-                     "İlk Hedef": initial["target_1"], "Hedef Gerçekleşme %": dynamic.get("target_progress_pct"),
-                     "Hedefe Kalan %": dynamic.get("target_remaining_pct"), "İlk Stop": initial["stop_loss"],
-                     "Stopa Kalan %": dynamic.get("stop_remaining_pct"), "Takipte En Yüksek": dynamic.get("highest"),
-                     "Takipte En Düşük": dynamic.get("lowest"), "Maksimum Ters Hareket %": dynamic.get("max_adverse_pct"),
-                     "İlk Nova Güven": initial["confidence"], "Güncel Nova Güven": dynamic.get("confidence"),
-                     "Son Güncelleme": timestamp_display_label(dynamic.get("updated_at")), "Veri Durumu": dynamic.get("data_status", "Korunmuş eski")})
-    source_filter = st.selectbox("Kaynak filtresi", ["Tümü", "Dashboard", "Smart Scanner"])
-    table = pd.DataFrame(rows)
-    if source_filter != "Tümü": table = table[table["Kaynak"] == source_filter]
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    filter_col, sort_col = st.columns([1, 1])
+    with filter_col:
+        source_filter = st.selectbox("Kaynak filtresi", ["Tümü", "Dashboard", "Smart Scanner"], key="inception_source_filter")
+    with sort_col:
+        sort_mode = st.selectbox(
+            "Sıralama",
+            ["Takibe alınma zamanı", "Hedefe en yakın", "En yüksek gerçekleşen getiri", "En düşük gerçekleşen getiri", "Sembol"],
+            key="inception_sort_mode",
+        )
+    visible_records = [record for record in active if source_filter == "Tümü" or record.get("source") == source_filter]
+    def sort_number(record: dict, field: str, fallback: float) -> float:
+        try:
+            value = float(record.get("dynamic", {}).get(field))
+            return value if math.isfinite(value) else fallback
+        except (TypeError, ValueError):
+            return fallback
+    if sort_mode == "Hedefe en yakın":
+        visible_records.sort(key=lambda record: abs(sort_number(record, "target_remaining_pct", math.inf)))
+    elif sort_mode == "En yüksek gerçekleşen getiri":
+        visible_records.sort(key=lambda record: sort_number(record, "return_pct", -math.inf), reverse=True)
+    elif sort_mode == "En düşük gerçekleşen getiri":
+        visible_records.sort(key=lambda record: sort_number(record, "return_pct", math.inf))
+    elif sort_mode == "Sembol":
+        visible_records.sort(key=lambda record: str(record.get("symbol", "")))
+    else:
+        visible_records.sort(key=lambda record: str(record.get("added_at", "")), reverse=True)
+    positive_count = sum(sort_number(record, "return_pct", 0) > 0.05 for record in visible_records)
+    negative_count = sum(sort_number(record, "return_pct", 0) < -0.05 for record in visible_records)
+    target_count = sum(bool(record.get("dynamic", {}).get("target_touched")) for record in visible_records)
+    st.markdown(
+        f'<div style="padding:8px 12px;margin:2px 0 10px;border:1px solid rgba(148,163,184,.18);border-radius:8px;color:#9aabc0;font-size:.78rem;">'
+        f'Takipte: <b>{len(visible_records)}</b> &nbsp;|&nbsp; Pozitif: <b>{positive_count}</b> &nbsp;|&nbsp; Negatif: <b>{negative_count}</b> &nbsp;|&nbsp; Hedefe Ulaşan: <b>{target_count}</b></div>',
+        unsafe_allow_html=True,
+    )
+    if visible_records:
+        render_inception_tracking_strips(visible_records)
+    else:
+        st.info("Seçili kaynakta aktif takip kaydı bulunmuyor.")
     selected = st.selectbox("İşlem yapılacak kayıt", [r["symbol"] for r in active])
     selected_record = next(r for r in active if r["symbol"] == selected)
-    with st.expander("Detay Gör"):
-        st.json(selected_record)
     action_col, remove_col = st.columns(2)
     if action_col.button("Takibi Tamamla", use_container_width=True):
         record = selected_record
