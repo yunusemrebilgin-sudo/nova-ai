@@ -2,7 +2,7 @@ import inspect
 import math
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
@@ -130,6 +130,18 @@ class SmartScannerRefreshTests(unittest.TestCase):
         results_read = source.index('st.session_state.get("smart_scanner_results"', scan_call)
         self.assertLess(button_guard, scan_call)
         self.assertLess(scan_call, results_read)
+
+    def test_old_scanner_signature_clears_stale_caches_before_retry(self):
+        old_market_scan = Mock(side_effect=[TypeError("unexpected keyword argument 'scan_id'"), (pd.DataFrame(), [], False, 0)])
+        old_symbol_cache = Mock()
+        old_download_cache = Mock()
+        with patch.object(app.nova_scanner, "scan_smart_market", old_market_scan), \
+             patch.object(app.nova_scanner, "scan_smart_symbol", old_symbol_cache), \
+             patch.object(app.nova_scanner, "download_price_data", old_download_cache):
+            app.run_smart_market_scan(tuple(), "1-5 gün", scan_id="fresh-scan")
+        old_symbol_cache.clear.assert_called_once()
+        old_download_cache.clear.assert_called_once()
+        self.assertEqual(old_market_scan.call_count, 2)
 
 
 if __name__ == "__main__":

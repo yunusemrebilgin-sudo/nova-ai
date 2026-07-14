@@ -2642,12 +2642,29 @@ def run_smart_market_scan(
     max_seconds: int = 60,
     scan_id: str | None = None,
 ) -> tuple[pd.DataFrame, list[str], bool, int]:
-    return nova_scanner.scan_smart_market(
-        symbol_rows,
-        selected_horizon=selected_horizon,
-        max_seconds=max_seconds,
-        scan_id=scan_id,
-    )
+    try:
+        return nova_scanner.scan_smart_market(
+            symbol_rows,
+            selected_horizon=selected_horizon,
+            max_seconds=max_seconds,
+            scan_id=scan_id,
+        )
+    except TypeError as exc:
+        if "scan_id" not in str(exc):
+            raise
+        # Streamlit Cloud can briefly retain the previous scanner module during
+        # a hot deploy. Clear both old cache layers before using its old signature
+        # so a compatibility retry cannot present stale expected-return rows.
+        for cached_function_name in ("scan_smart_symbol", "download_price_data"):
+            cached_function = getattr(nova_scanner, cached_function_name, None)
+            clear_cache = getattr(cached_function, "clear", None)
+            if callable(clear_cache):
+                clear_cache()
+        return nova_scanner.scan_smart_market(
+            symbol_rows,
+            selected_horizon=selected_horizon,
+            max_seconds=max_seconds,
+        )
 
 
 def normalize_smart_scanner_table(table: pd.DataFrame | None) -> pd.DataFrame:
