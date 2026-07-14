@@ -216,7 +216,9 @@ def init_access_state() -> None:
         secret_users = st.secrets.get("NOVA_USERS", os.environ.get("NOVA_USERS_JSON", ""))
     except Exception:
         secret_users = os.environ.get("NOVA_USERS_JSON", "")
-    user_store.configure_users(secret_users)
+    configure_users = getattr(user_store, "configure_users", None)
+    if callable(configure_users):
+        configure_users(secret_users)
     if "is_authenticated" not in st.session_state:
         st.session_state.is_authenticated = False
     if "auth_user" not in st.session_state:
@@ -3332,7 +3334,8 @@ def render_login_page() -> bool:
         '<div class="nova-subtitle">Smart Scanner ücretsiz üyelik ile kullanılabilir.</div>',
         unsafe_allow_html=True,
     )
-    if not user_store.users_configured():
+    users_configured = getattr(user_store, "users_configured", lambda: bool(getattr(user_store, "USERS", {})))
+    if not users_configured():
         st.error("Giriş sistemi yapılandırılmadı. NOVA_USERS secret tanımı gereklidir.")
         return False
     with st.form("smart_scanner_login_form"):
