@@ -1,6 +1,7 @@
 streamlit==1.58.0
-yfinance
+yfinance==0.2.66
 plotly
-pandas
+pandas==2.2.3
+pyarrow==19.0.1
 requests
 extra-streamlit-components==0.1.81
