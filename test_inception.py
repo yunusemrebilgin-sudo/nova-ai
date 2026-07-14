@@ -16,7 +16,8 @@ NOW = datetime(2026, 7, 14, 12, 0, tzinfo=app.app_timezone())
 def snapshot(symbol="ASTOR.IS", expected=7.1):
     return {"symbol": symbol, "horizon": "1-5 gün", "price": 100, "market_data_time": "2026-07-14",
             "expected_return": expected, "target_1": 110, "target_2": 115, "stop_loss": 94,
-            "nova_score": 80, "confidence": 85, "indicators": {"rsi": 55}, "sector": "Enerji", "market_state": "Pozitif"}
+            "nova_score": 80, "confidence": 85, "indicators": {"rsi": 55}, "sector": "Enerji", "market_state": "Pozitif",
+            "critical_window_start": 3, "critical_window_end": 5}
 
 
 def frame(high=108, low=96, close=105):
@@ -55,10 +56,23 @@ class InceptionTests(unittest.TestCase):
         self.assertEqual(updated["initial"]["expected_return"], 7.1)
         self.assertEqual(updated["initial"]["target_1"], 110)
         self.assertEqual(updated["initial"]["stop_loss"], 94)
+        self.assertEqual(updated["initial"]["critical_window_start"], 3)
+        self.assertEqual(updated["initial"]["critical_window_end"], 5)
         self.assertEqual(updated["dynamic"]["expected_return"], 3.3)
 
     def test_trading_day_counter(self):
         self.assertEqual(inception.trading_days("2026-07-10T12:00:00+03:00", datetime(2026, 7, 14)), 2)
+
+    def test_elapsed_days_uses_actual_market_frame_sessions(self):
+        market_sessions = frame()
+        market_sessions.index = pd.to_datetime(["2026-07-14", "2026-07-17"])
+        updated = inception.update_record(
+            inception.create_record(snapshot(), "Dashboard", NOW),
+            scan_row(),
+            market_sessions,
+            NOW + timedelta(days=3),
+        )
+        self.assertEqual(updated["dynamic"]["elapsed_days"], 1)
 
     def test_target_progress_and_max_adverse(self):
         updated = inception.update_record(inception.create_record(snapshot(), "Dashboard", NOW), scan_row(), frame(low=90), NOW + timedelta(days=1))
@@ -159,9 +173,9 @@ class InceptionTests(unittest.TestCase):
         strip_source = inspect.getsource(app.render_inception_tracking_strips)
         self.assertNotIn("st.dataframe(", page_source)
         self.assertIn("render_inception_tracking_strips", page_source)
-        self.assertIn("nova-track-strip", strip_source)
+        self.assertIn("nova-inception-track-strip", strip_source)
         self.assertIn("dedent(", strip_source)
-        self.assertIn("grid-template-columns:16% 48% 36%", strip_source)
+        self.assertIn("grid-template-columns:18% 40%", strip_source)
         self.assertIn("@media(max-width:760px)", strip_source)
 
     def test_inception_missing_values_render_as_dash(self):
@@ -173,6 +187,47 @@ class InceptionTests(unittest.TestCase):
         for label in ("Hedefe en yakın", "En yüksek gerçekleşen getiri", "En düşük gerçekleşen getiri", "Sembol"):
             self.assertIn(label, source)
         self.assertIn("Hedefe Ulaşan", source)
+
+    def test_inception_critical_day_states_and_pulse_scope(self):
+        record = inception.create_record(snapshot(), "Dashboard", NOW)
+        expected = {
+            0: ("3 GÜN", "neutral", False),
+            1: ("2 GÜN", "warning", False),
+            2: ("YARIN", "tomorrow", False),
+            3: ("BUGÜN", "active", True),
+            4: ("AKTİF", "active", False),
+            5: ("SON GÜN", "last", True),
+            6: ("GEÇTİ", "passed", False),
+        }
+        for elapsed, state in expected.items():
+            record["dynamic"] = {"elapsed_days": elapsed}
+            result = app.inception_critical_day_state(record)
+            self.assertEqual((result["label"], result["tone"], result["pulse"]), state)
+
+    def test_inception_critical_day_missing_snapshot_is_dash(self):
+        record = inception.create_record(snapshot(), "Dashboard", NOW)
+        record["initial"].pop("critical_window_start")
+        self.assertEqual(app.inception_critical_day_state(record)["label"], "—")
+
+    def test_inception_critical_css_is_accessible_and_mobile_safe(self):
+        source = inspect.getsource(app.render_inception_tracking_strips)
+        self.assertIn("animation:novaCriticalPulse .8s", source)
+        self.assertIn("animation:novaTodayCriticalPulse .8s", source)
+        self.assertIn("box-shadow:0 0 23.4px currentColor", source)
+        self.assertIn(".nova-inception-critical.active.pulse", source)
+        self.assertIn("prefers-reduced-motion:reduce", source)
+        self.assertNotIn("minmax(300px", source)
+        self.assertNotIn("minmax(370px", source)
+        self.assertIn("nova-inception-detail", source)
+        self.assertIn('<details class="nova-inception-track-strip">', source)
+
+    def test_inception_add_flows_capture_critical_window_snapshot(self):
+        dashboard_source = inspect.getsource(app.render_dashboard_page)
+        scanner_source = inspect.getsource(app.render_scanner_watchlist_add)
+        self.assertIn('"critical_window_start"', dashboard_source)
+        self.assertIn('"critical_window_end"', dashboard_source)
+        self.assertIn('snapshot["critical_window_start"]', scanner_source)
+        self.assertIn('snapshot["critical_window_end"]', scanner_source)
 
 
 if __name__ == "__main__":

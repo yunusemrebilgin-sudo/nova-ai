@@ -30,6 +30,8 @@ def create_record(snapshot: dict, source: str, added_at: datetime) -> dict:
             "stop_loss": float(snapshot["stop_loss"]), "nova_score": int(snapshot.get("nova_score", 0)),
             "confidence": int(snapshot.get("confidence", 0)), "indicators": dict(snapshot.get("indicators", {})),
             "sector": snapshot.get("sector", "Bilinmiyor"), "market_state": snapshot.get("market_state", "Bilinmiyor"),
+            "critical_window_start": snapshot.get("critical_window_start"),
+            "critical_window_end": snapshot.get("critical_window_end"),
         },
         "dynamic": {},
     }
@@ -51,7 +53,8 @@ def update_record(record: dict, row: dict, raw_data: pd.DataFrame, updated_at: d
     stop = float(initial["stop_loss"])
     highs = raw_data["High"].dropna().astype(float)
     lows = raw_data["Low"].dropna().astype(float)
-    elapsed = trading_days(result["added_at"], updated_at)
+    session_index = pd.DatetimeIndex(raw_data.index).normalize().unique()
+    elapsed = max(0, len(session_index) - 1)
     horizon_days = HORIZON_DAYS.get(str(result.get("horizon")), 5)
     high = float(highs.max()) if not highs.empty else price
     low = float(lows.min()) if not lows.empty else price

@@ -2399,6 +2399,15 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
             "confidence": scan_row["AI Güven Endeksi"], "indicators": {k: scan_row.get(k) for k in ("RSI", "MACD", "Volatilite", "Hacim Oranı")},
             "sector": "Bilinmiyor", "market_state": scan_row["Trend"],
         }
+        holding_period = scan_row.get("Beklenen Taşıma Süresi")
+        if holding_period:
+            window_start, window_end = follow_window_day_range(
+                str(holding_period),
+                int(scan_row.get("Takip Penceresi Başlangıç %", 40)),
+                int(scan_row.get("Takip Penceresi Genişlik %", 20)),
+            )
+            snapshot["critical_window_start"] = window_start
+            snapshot["critical_window_end"] = window_end
         active, added = nova_inception.add_record(active, snapshot, "Smart Scanner", now_istanbul())
         if added:
             added_symbols.append(symbol)
@@ -3197,6 +3206,16 @@ def render_dashboard_page() -> None:
                            "ema20": safe_float(latest.get("EMA20")), "ema50": safe_float(latest.get("EMA50")),
                            "volatility": safe_float(latest.get("VOLATILITY20"))},
             "sector": sector, "market_state": trend_text(latest),
+            "critical_window_start": follow_window_day_range(
+                str(selected_trade_row["Beklenen Taşıma Süresi"]),
+                int(selected_trade_row.get("Takip Penceresi Başlangıç %", 40)),
+                int(selected_trade_row.get("Takip Penceresi Genişlik %", 20)),
+            )[0],
+            "critical_window_end": follow_window_day_range(
+                str(selected_trade_row["Beklenen Taşıma Süresi"]),
+                int(selected_trade_row.get("Takip Penceresi Başlangıç %", 40)),
+                int(selected_trade_row.get("Takip Penceresi Genişlik %", 20)),
+            )[1],
         }
         render_add_to_ai_watchlist(ticker, bist_symbols, selected_horizon, inception_snapshot)
         render_one_month_trade_trends(data, ticker)
@@ -4597,6 +4616,39 @@ def _inception_price_positions(start: object, current: object, target: object) -
     return tuple(positions)
 
 
+def inception_critical_day_state(record: dict, as_of: datetime | None = None) -> dict[str, object]:
+    """Return the display state for an immutable Inception critical-window snapshot."""
+    initial = record.get("initial", {})
+    try:
+        start_day = int(initial.get("critical_window_start"))
+        end_day = int(initial.get("critical_window_end"))
+    except (TypeError, ValueError):
+        return {"label": "—", "tone": "missing", "pulse": False}
+    if start_day < 0 or end_day < start_day:
+        return {"label": "—", "tone": "missing", "pulse": False}
+    dynamic_elapsed = record.get("dynamic", {}).get("elapsed_days")
+    if as_of is None and isinstance(dynamic_elapsed, (int, float)) and math.isfinite(float(dynamic_elapsed)):
+        elapsed = int(dynamic_elapsed)
+    else:
+        elapsed = nova_inception.trading_days(record.get("added_at"), as_of or now_istanbul())
+    remaining = start_day - elapsed
+    if elapsed > end_day:
+        return {"label": "GEÇTİ", "tone": "passed", "pulse": False}
+    if elapsed == end_day and end_day > start_day:
+        return {"label": "SON GÜN", "tone": "last", "pulse": True}
+    if elapsed == start_day:
+        return {"label": "BUGÜN", "tone": "active", "pulse": True}
+    if start_day < elapsed < end_day:
+        return {"label": "AKTİF", "tone": "active", "pulse": False}
+    if remaining == 1:
+        return {"label": "YARIN", "tone": "tomorrow", "pulse": False}
+    if remaining == 2:
+        return {"label": "2 GÜN", "tone": "warning", "pulse": False}
+    if remaining >= 3:
+        return {"label": f"{remaining} GÜN", "tone": "neutral", "pulse": False}
+    return {"label": "—", "tone": "missing", "pulse": False}
+
+
 def render_inception_tracking_strips(records: list[dict]) -> None:
     strips = []
     for record in records:
@@ -4623,26 +4675,31 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
         except (TypeError, ValueError):
             pass
         target_label = "Hedef Gerçekleşti" if target_reached else _inception_display_percent(target_remaining)
-        follow_label = f"{int(elapsed_days)} Gün" if isinstance(elapsed_days, (int, float)) and math.isfinite(float(elapsed_days)) else "—"
+        critical = inception_critical_day_state(record)
+        critical_classes = f"nova-inception-critical {critical['tone']}"
+        if critical["pulse"]:
+            critical_classes += " pulse"
         strips.append(dedent(f"""
-        <details class="nova-track-strip">
+        <details class="nova-inception-track-strip">
           <summary>
-            <div class="nova-track-identity"><span class="nova-track-dot {status_class}"></span><div><strong>{symbol}</strong><small>{source} • {horizon}</small></div></div>
-            <div class="nova-price-track">
-              <div class="nova-track-line"></div>
-              <span class="nova-price-marker start" style="left:{start_pos:.2f}%">●</span>
-              <span class="nova-price-marker current" style="left:{current_pos:.2f}%">▲</span>
-              <span class="nova-price-marker target" style="left:{target_pos:.2f}%">◎</span>
-              <div class="nova-track-prices"><span>Başlangıç {_inception_display_number(start_price)}</span><span>Güncel {_inception_display_number(current_price)}</span><span>Hedef {_inception_display_number(current_target)}</span></div>
+            <div class="nova-inception-identity"><span class="nova-inception-dot {status_class}"></span><div><strong>{symbol}</strong><small class="source">{source}</small><small>{horizon} • Takipte {_inception_display_number(elapsed_days, 0)}. işlem günü</small></div></div>
+            <div class="nova-inception-price-track {status_class}">
+              <div class="nova-inception-track-line"></div>
+              <div class="nova-inception-track-progress" style="left:{start_pos:.2f}%;width:{max(0.0, current_pos - start_pos):.2f}%"></div>
+              <span class="nova-inception-price-marker start" style="left:{start_pos:.2f}%">●</span>
+              <span class="nova-inception-price-marker current" style="left:{current_pos:.2f}%">▲</span>
+              <span class="nova-inception-price-marker target" style="left:{target_pos:.2f}%">◎</span>
+              <div class="nova-inception-price-values"><span><b>{_inception_display_number(start_price)}</b><small>Başlangıç</small></span><span><b>{_inception_display_number(current_price)}</b><small>Güncel</small><em class="{status_class}">{_inception_display_percent(realized, signed=True)}</em></span><span><b>{_inception_display_number(current_target)}</b><small>Hedef</small></span></div>
             </div>
-            <div class="nova-track-metrics">
+            <div class="nova-inception-metrics">
               <div><small>Gerçekleşen</small><strong class="{status_class}">{_inception_display_percent(realized, signed=True)}</strong></div>
               <div><small>Güncel Beklenti</small><strong>{_inception_display_percent(current_expected)}</strong></div>
               <div><small>Hedefe Kalan</small><strong>{target_label}</strong></div>
-              <div><small>Takip</small><strong>{follow_label}</strong></div>
+              <div><small>Kritik Gün</small><strong class="{critical_classes}">{critical['label']}</strong></div>
             </div>
+            <span class="nova-inception-chevron">⌄</span>
           </summary>
-          <div class="nova-track-detail">
+          <div class="nova-inception-detail">
             <span><small>Takibe Alınma</small><b>{escape(timestamp_display_label(record.get('added_at')))}</b></span>
             <span><small>Vade</small><b>{horizon}</b></span>
             <span><small>İlk Beklenti</small><b>{_inception_display_percent(initial.get('expected_return'))}</b></span>
@@ -4657,33 +4714,54 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
         </details>""").strip())
     st.markdown(dedent(f"""
     <style>
-      .nova-track-list {{display:flex;flex-direction:column;gap:8px;width:100%;}}
-      .nova-track-strip {{border:1px solid rgba(148,163,184,.2);border-radius:10px;background:rgba(8,18,33,.72);overflow:hidden;}}
-      .nova-track-strip summary {{list-style:none;display:grid;grid-template-columns:16% 48% 36%;align-items:center;min-height:88px;padding:8px 16px;cursor:pointer;}}
-      .nova-track-strip summary::-webkit-details-marker {{display:none;}}
-      .nova-track-identity {{display:flex;align-items:center;gap:9px;min-width:0;}}
-      .nova-track-identity strong {{display:block;color:#e8f1ff;font-size:1rem;line-height:1.15;}}
-      .nova-track-identity small,.nova-track-metrics small,.nova-track-detail small {{display:block;color:#8293aa;font-size:.68rem;}}
-      .nova-track-dot {{width:8px;height:8px;border-radius:50%;background:#64748b;flex:0 0 auto;}}
-      .nova-track-dot.positive {{background:#22c55e;}} .nova-track-dot.negative {{background:#ef4444;}}
-      .nova-price-track {{position:relative;height:62px;margin:0 22px;}}
-      .nova-track-line {{position:absolute;left:4%;right:4%;top:22px;height:1px;background:rgba(148,163,184,.52);}}
-      .nova-price-marker {{position:absolute;top:12px;transform:translateX(-50%);font-size:14px;color:#94a3b8;}}
-      .nova-price-marker.current {{color:#38bdf8;top:10px;}} .nova-price-marker.target {{color:#cbd5e1;}}
-      .nova-track-prices {{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:space-between;color:#8fa0b6;font-size:.67rem;}}
-      .nova-track-metrics {{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}}
-      .nova-track-metrics strong {{display:block;color:#e5eefc;font-size:.87rem;margin-top:3px;white-space:nowrap;}}
-      .nova-track-metrics strong.positive {{color:#34d399;}} .nova-track-metrics strong.negative {{color:#fb7185;}} .nova-track-metrics strong.neutral {{color:#94a3b8;}}
-      .nova-track-detail {{border-top:1px solid rgba(148,163,184,.16);display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:12px 18px;background:rgba(2,6,23,.22);}}
-      .nova-track-detail b {{display:block;color:#dbe7f7;font-size:.78rem;margin-top:3px;font-weight:650;}}
+      .nova-inception-track-list {{display:flex;flex-direction:column;gap:10px;width:100%;overflow-x:hidden;}}
+      .nova-inception-track-strip {{border:1px solid rgba(91,126,164,.28);border-radius:8px;background:linear-gradient(90deg,rgba(4,15,29,.95),rgba(7,20,37,.9));overflow:hidden;box-shadow:none;}}
+      .nova-inception-track-strip summary {{list-style:none;display:grid;grid-template-columns:18% 40% minmax(0,39%) 20px;gap:10px;align-items:center;height:104px;padding:7px 14px;cursor:pointer;box-sizing:border-box;}}
+      .nova-inception-track-strip summary::-webkit-details-marker {{display:none;}}
+      .nova-inception-identity {{display:flex;align-items:flex-start;gap:10px;min-width:0;}}
+      .nova-inception-identity strong {{display:block;color:#edf4ff;font-size:1.03rem;line-height:1.1;}}
+      .nova-inception-identity small,.nova-inception-metrics small,.nova-inception-detail small {{display:block;color:#8495ad;font-size:.66rem;}}
+      .nova-inception-identity small.source {{color:#39bdf8;margin:5px 0 2px;}}
+      .nova-inception-dot {{width:9px;height:9px;margin-top:4px;border-radius:50%;background:#64748b;flex:0 0 auto;}}
+      .nova-inception-dot.positive {{background:#12d86b;}} .nova-inception-dot.negative {{background:#ff334f;}}
+      .nova-inception-price-track {{position:relative;height:76px;margin:0 14px;min-width:0;}}
+      .nova-inception-track-line,.nova-inception-track-progress {{position:absolute;top:18px;height:1px;}}
+      .nova-inception-track-line {{left:4%;right:4%;background:rgba(148,163,184,.62);}}
+      .nova-inception-track-progress {{background:#73849a;}}
+      .nova-inception-price-track.positive .nova-inception-track-progress {{background:#08cf67;}} .nova-inception-price-track.negative .nova-inception-track-progress {{background:#ff3d59;}}
+      .nova-inception-price-marker {{position:absolute;top:9px;transform:translateX(-50%);font-size:14px;color:#8294aa;line-height:1;}}
+      .nova-inception-price-marker.current {{color:#1fb6f2;top:7px;}} .nova-inception-price-marker.target {{color:#d4deeb;}}
+      .nova-inception-price-values {{position:absolute;left:0;right:0;top:32px;display:grid;grid-template-columns:repeat(3,1fr);color:#dce8f8;text-align:center;}}
+      .nova-inception-price-values span:first-child {{text-align:left;}} .nova-inception-price-values span:last-child {{text-align:right;}}
+      .nova-inception-price-values b {{display:block;font-size:.84rem;}} .nova-inception-price-values small {{display:block;color:#899ab0;font-size:.64rem;}}
+      .nova-inception-price-values em {{display:block;font-size:.62rem;font-style:normal;}} .nova-inception-price-values em.positive {{color:#20df78;}} .nova-inception-price-values em.negative {{color:#ff536a;}}
+      .nova-inception-metrics {{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;}}
+      .nova-inception-metrics strong {{display:block;color:#edf3fc;font-size:.88rem;margin-top:7px;white-space:nowrap;}}
+      .nova-inception-metrics strong.positive {{color:#28e27d;}} .nova-inception-metrics strong.negative {{color:#ff536a;}} .nova-inception-metrics strong.neutral {{color:#a2afc0;}}
+      .nova-inception-critical {{display:inline-block!important;width:max-content;padding:5px 9px;border-radius:6px;background:#17263a;color:#a6b5c8!important;font-size:.72rem!important;line-height:1;}}
+      .nova-inception-critical.warning {{color:#ffd22e!important;background:rgba(120,86,0,.35);box-shadow:inset 0 0 0 1px rgba(255,194,0,.35);}}
+      .nova-inception-critical.tomorrow {{color:#ff9f2e!important;background:rgba(120,56,0,.38);box-shadow:inset 0 0 0 1px rgba(255,135,20,.4);}}
+      .nova-inception-critical.active {{color:#2df17f!important;background:rgba(0,94,44,.42);box-shadow:inset 0 0 0 1px rgba(20,230,108,.4);}}
+      .nova-inception-critical.last {{color:#fff!important;background:#a50d22;box-shadow:0 0 10px rgba(255,20,55,.55);}}
+      .nova-inception-critical.passed {{opacity:.55;}}
+      @keyframes novaCriticalPulse {{0%,100%{{transform:scale(1);opacity:1;box-shadow:0 0 4px currentColor}}50%{{transform:scale(1.08);opacity:.65;box-shadow:0 0 18px currentColor}}}}
+      .nova-inception-critical.pulse {{animation:novaCriticalPulse .8s ease-in-out infinite;}}
+      @keyframes novaTodayCriticalPulse {{0%,100%{{transform:scale(1);opacity:1;box-shadow:0 0 5.2px currentColor}}50%{{transform:scale(1.08);opacity:.65;box-shadow:0 0 23.4px currentColor}}}}
+      .nova-inception-critical.active.pulse {{font-weight:750;animation:novaTodayCriticalPulse .8s ease-in-out infinite;}}
+      .nova-inception-chevron {{color:#8395ad;font-size:1.1rem;transition:transform .18s ease;}}
+      .nova-inception-track-strip[open] .nova-inception-chevron {{transform:rotate(180deg);}}
+      .nova-inception-detail {{border-top:1px solid rgba(91,126,164,.2);display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:12px 18px;background:rgba(2,8,18,.45);}}
+      .nova-inception-detail b {{display:block;color:#dbe7f7;font-size:.78rem;margin-top:3px;font-weight:650;}}
+      @media(prefers-reduced-motion:reduce) {{.nova-inception-critical.pulse {{animation:none;}}}}
       @media(max-width:760px) {{
-        .nova-track-strip summary {{grid-template-columns:1fr;gap:6px;min-height:0;padding:10px 12px;}}
-        .nova-price-track {{margin:0 5px;height:52px;}}
-        .nova-track-metrics {{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;}}
-        .nova-track-metrics strong {{font-size:.76rem;white-space:normal;}}
-        .nova-track-detail {{grid-template-columns:repeat(2,minmax(0,1fr));padding:10px 12px;}}
+        .nova-inception-track-strip summary {{grid-template-columns:1fr;gap:6px;height:auto;min-height:0;padding:10px 12px;}}
+        .nova-inception-price-track {{margin:0 5px;height:68px;}}
+        .nova-inception-metrics {{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;}}
+        .nova-inception-metrics strong {{font-size:.76rem;white-space:normal;}}
+        .nova-inception-detail {{grid-template-columns:repeat(2,minmax(0,1fr));padding:10px 12px;}}
+        .nova-inception-chevron {{display:none;}}
       }}
-    </style><div class="nova-track-list">{''.join(strips)}</div>""").strip(), unsafe_allow_html=True)
+    </style><div class="nova-inception-track-list">{''.join(strips)}</div>""").strip(), unsafe_allow_html=True)
 
 
 def render_inception_page() -> None:
@@ -4720,8 +4798,6 @@ def render_inception_page() -> None:
         else:
             st.warning("Korunmuş eski sonuç — güncelleme tamamlanamadı; son başarılı zaman değiştirilmedi.")
     update_meta = next((item for item in metadata if item.get("kind") == "update"), {})
-    st.info(f"Son başarılı güncelleme: {timestamp_display_label(update_meta.get('last_success_at'))}")
-    st.caption(f"Kullanılan piyasa verisi: {timestamp_display_label(update_meta.get('market_data_time'))}")
     st.caption("Sonuç durumu: " + ("Güncel" if update_meta.get("status") == "current" else "Korunmuş eski sonuç"))
     if not bist_market_is_open(now):
         st.caption("Piyasa kapalı; mevcut son işlem verileri kullanılmıştır.")
@@ -4758,12 +4834,23 @@ def render_inception_page() -> None:
     negative_count = sum(sort_number(record, "return_pct", 0) < -0.05 for record in visible_records)
     target_count = sum(bool(record.get("dynamic", {}).get("target_touched")) for record in visible_records)
     st.markdown(
-        f'<div style="padding:8px 12px;margin:2px 0 10px;border:1px solid rgba(148,163,184,.18);border-radius:8px;color:#9aabc0;font-size:.78rem;">'
-        f'Takipte: <b>{len(visible_records)}</b> &nbsp;|&nbsp; Pozitif: <b>{positive_count}</b> &nbsp;|&nbsp; Negatif: <b>{negative_count}</b> &nbsp;|&nbsp; Hedefe Ulaşan: <b>{target_count}</b></div>',
+        dedent(f"""
+        <div class="nova-inception-summary">
+          <span>Takipte: <b>{len(visible_records)}</b> <i>|</i> <b class="positive">●</b> Pozitif: <b>{positive_count}</b> <i>|</i> <b class="negative">●</b> Negatif: <b>{negative_count}</b> <i>|</i> <b class="target">◎</b> Hedefe Ulaşan: <b>{target_count}</b></span>
+          <span>◷ Son güncelleme: <b>{escape(timestamp_display_label(update_meta.get('last_success_at')))}</b> <i>|</i> Piyasa verisi: <b>{escape(timestamp_display_label(update_meta.get('market_data_time')))}</b></span>
+        </div>
+        <style>
+          .nova-inception-summary {{display:flex;justify-content:space-between;gap:16px;padding:10px 14px;margin:2px 0 10px;border:1px solid rgba(91,126,164,.25);border-radius:7px;background:rgba(4,14,27,.72);color:#a7b5c8;font-size:.76rem;}}
+          .nova-inception-summary b {{color:#e7eef9;}} .nova-inception-summary i {{padding:0 10px;color:#586a80;font-style:normal;}}
+          .nova-inception-summary b.positive {{color:#20df78;}} .nova-inception-summary b.negative {{color:#ff3852;}} .nova-inception-summary b.target {{color:#28bdf6;}}
+          @media(max-width:760px) {{.nova-inception-summary {{flex-direction:column;gap:5px;}}}}
+        </style>
+        """).strip(),
         unsafe_allow_html=True,
     )
     if visible_records:
         render_inception_tracking_strips(visible_records)
+        st.caption("ⓘ Kritik gün hesaplamaları BIST işlem günlerine göre yapılır.")
     else:
         st.info("Seçili kaynakta aktif takip kaydı bulunmuyor.")
     selected = st.selectbox("İşlem yapılacak kayıt", [r["symbol"] for r in active])
