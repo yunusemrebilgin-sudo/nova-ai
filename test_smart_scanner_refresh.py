@@ -57,6 +57,10 @@ class SmartScannerRefreshTests(unittest.TestCase):
         self.assertFalse(hasattr(scanner.scan_smart_symbol, "clear"))
         self.assertNotIn("@st.cache_data", inspect.getsource(scanner.scan_smart_symbol))
 
+    def test_price_download_is_not_retained_in_global_streamlit_cache(self):
+        self.assertFalse(hasattr(scanner.download_price_data, "clear"))
+        self.assertNotIn("@st.cache_data", inspect.getsource(scanner.download_price_data))
+
     @patch("scanner.news.news_impact_percent", return_value=0.0)
     @patch("scanner.download_price_data")
     def test_one_download_per_symbol_inside_one_scan(self, download, _news):

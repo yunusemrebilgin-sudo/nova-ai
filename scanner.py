@@ -65,10 +65,11 @@ def _scan_row(
     }
 
 
-@st.cache_data(ttl=900, show_spinner=False)
 def download_price_data(symbol: str, scan_id: str | None = None) -> pd.DataFrame:
-    # scan_id is intentionally part of the cache key. A permitted user scan gets
-    # a new id, while duplicate access inside that same scan can reuse the data.
+    # Each scanner cycle calls this exactly once per symbol. Keeping hundreds of
+    # six-month DataFrames in Streamlit's global cache for every unique scan_id
+    # exhausts Community Cloud memory, so price evidence is intentionally local
+    # to the active scan and released afterwards.
     del scan_id
     return yf.download(
         symbol,
