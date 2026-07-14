@@ -111,7 +111,8 @@ class InceptionTests(unittest.TestCase):
     def test_scanner_add_links_queue_one_batch_and_only_persisted_rows_are_green(self):
         source = inspect.getsource(app.render_nova_bist_table)
         self.assertIn("scanner_add_batch", source)
-        self.assertIn("2500", source)
+        self.assertIn("Seçilenleri Inception’a Kaydet", source)
+        self.assertNotIn("setTimeout", source)
         self.assertNotIn('target="nova_watchlist_sink"', source)
         self.assertNotIn("this.classList.add('added')", source)
         self.assertIn('class="nova-add-link{added_class}"', source)

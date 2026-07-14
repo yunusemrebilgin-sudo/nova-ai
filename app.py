@@ -2482,6 +2482,9 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
             .nova-add-link:hover {{ color:#07111f; background:#38bdf8; box-shadow:0 0 16px rgba(56,189,248,.32); }}
             .nova-add-link.queued {{ color:#07111f; border-color:#fbbf24; background:#fbbf24; box-shadow:0 0 14px rgba(251,191,36,.28); }}
             .nova-add-link.added {{ color:#052e24; border-color:#34d399; background:#34d399; box-shadow:0 0 14px rgba(52,211,153,.28); }}
+            .nova-batch-bar {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; padding:10px 12px; border:1px solid rgba(56,189,248,.25); border-radius:9px; background:rgba(15,23,42,.72); color:#93a4bc; font-size:.8rem; }}
+            .nova-batch-submit {{ padding:9px 14px; border-radius:8px; color:#07111f; background:#38bdf8; font-weight:800; text-decoration:none; white-space:nowrap; }}
+            .nova-batch-submit.disabled {{ pointer-events:none; opacity:.42; }}
             .nova-watchlist-sink {{ display:none; width:0; height:0; border:0; }}
             .nova-scan-table th.nova-sortable:hover,
             .nova-scan-table th.nova-sortable.active {{
@@ -2576,6 +2579,10 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
                 .nova-scan-table td {{ padding:11px 12px; }}
             }}
         </style>
+        <div class="nova-batch-bar">
+            <span>Hisseleri + ile seçin, ardından toplu olarak kaydedin.</span>
+            <a id="nova-batch-submit" class="nova-batch-submit disabled" href="#" target="_top">Seçilenleri Inception’a Kaydet (0)</a>
+        </div>
         <div class="nova-scan-table-wrap">
             <table class="nova-scan-table">
                 <thead><tr>{header}</tr></thead>
@@ -2588,22 +2595,22 @@ def render_nova_bist_table(table: pd.DataFrame, columns: list[str]) -> None:
                 const table = document.querySelector(".nova-scan-table");
                 if (!table) return;
                 const queued = new Set();
-                let submitTimer = null;
+                const submit = document.getElementById("nova-batch-submit");
+                const refreshSubmit = () => {{
+                    const count = queued.size;
+                    submit.textContent = `Seçilenleri Inception’a Kaydet (${{count}})`;
+                    submit.classList.toggle("disabled", count === 0);
+                    submit.href = count
+                        ? `/?scanner_add_batch=${{encodeURIComponent(Array.from(queued).join(","))}}&watch_horizon=${{encodeURIComponent("{watch_horizon}")}}`
+                        : "#";
+                }};
                 document.querySelectorAll(".nova-add-link:not(.added)").forEach((button) => {{
                     button.addEventListener("click", () => {{
                         const symbol = button.dataset.symbol;
                         if (!symbol) return;
-                        queued.add(symbol);
-                        document.querySelectorAll(`.nova-add-link[data-symbol="${{symbol}}"]`).forEach((item) => item.classList.add("queued"));
-                        window.clearTimeout(submitTimer);
-                        submitTimer = window.setTimeout(() => {{
-                            const href = `/?scanner_add_batch=${{encodeURIComponent(Array.from(queued).join(","))}}&watch_horizon=${{encodeURIComponent("{watch_horizon}")}}`;
-                            const link = document.createElement("a");
-                            link.href = href;
-                            link.target = "_top";
-                            document.body.appendChild(link);
-                            link.click();
-                        }}, 2500);
+                        if (queued.has(symbol)) queued.delete(symbol); else queued.add(symbol);
+                        document.querySelectorAll(`.nova-add-link[data-symbol="${{symbol}}"]`).forEach((item) => item.classList.toggle("queued", queued.has(symbol)));
+                        refreshSubmit();
                     }});
                 }});
                 const tbody = table.querySelector("tbody");
