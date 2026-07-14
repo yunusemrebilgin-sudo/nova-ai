@@ -2166,6 +2166,11 @@ def open_symbol_in_dashboard(symbol: str) -> None:
     st.query_params.pop("scanner_detail", None)
 
 
+def navigate_to_page(page: str) -> None:
+    """Change the navigation widget value safely from a widget callback."""
+    st.session_state.selected_page = page
+
+
 def close_scanner_stock_dialog() -> None:
     st.query_params.pop("scanner_detail", None)
 
@@ -3174,14 +3179,20 @@ def render_dashboard_page() -> None:
             inception_col, report_col = st.columns(2)
             with inception_col:
                 st.caption("Nova takip başlangıçlarını sabit snapshot ile izle.")
-                if st.button("Inception’ı Aç", use_container_width=True):
-                    st.session_state.selected_page = INCEPTION_PAGE
-                    st.rerun()
+                st.button(
+                    "Inception’ı Aç",
+                    use_container_width=True,
+                    on_click=navigate_to_page,
+                    args=(INCEPTION_PAGE,),
+                )
             with report_col:
                 st.caption("Tamamlanan Nova takiplerinin geçmiş performansını incele.")
-                if st.button("Analiz Raporunu Aç", use_container_width=True):
-                    st.session_state.selected_page = ANALYSIS_REPORT_PAGE
-                    st.rerun()
+                st.button(
+                    "Analiz Raporunu Aç",
+                    use_container_width=True,
+                    on_click=navigate_to_page,
+                    args=(ANALYSIS_REPORT_PAGE,),
+                )
 
     with st.expander("Veri kaynağı ve yasal bilgilendirme", expanded=False):
         st.caption("BIST hisse listesi yerel CSV dosyasından okunur.")

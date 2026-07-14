@@ -120,6 +120,11 @@ class InceptionTests(unittest.TestCase):
         self.assertIn("Inception / Analiz Raporu", source)
         self.assertNotIn("render_pro_ai_watchlist(", source)
 
+    def test_dashboard_navigation_uses_callbacks_not_post_widget_state_mutation(self):
+        source = inspect.getsource(app.render_dashboard_page)
+        self.assertIn("on_click=navigate_to_page", source)
+        self.assertNotIn("st.session_state.selected_page =", source)
+
 
 if __name__ == "__main__":
     unittest.main()
