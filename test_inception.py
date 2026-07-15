@@ -315,6 +315,33 @@ class InceptionTests(unittest.TestCase):
         self.assertIn("grid-template-columns:18% 40%", strip_source)
         self.assertIn("@media(max-width:760px)", strip_source)
 
+    def test_inception_symbol_links_reuse_smart_scanner_live_summary(self):
+        strip_source = inspect.getsource(app.render_inception_tracking_strips)
+        main_source = inspect.getsource(app.main)
+        page_source = inspect.getsource(app.render_page)
+        summary_source = inspect.getsource(app.render_scanner_stock_summary)
+        self.assertIn('scanner_detail={quote(raw_symbol)}', strip_source)
+        self.assertNotIn('target="_blank"', strip_source)
+        self.assertIn("st.session_state.selected_page = SMART_SCANNER_PAGE", main_source)
+        self.assertIn("render_scanner_stock_summary(requested_symbol)", page_source)
+        self.assertNotIn("save_current_user_pro_data", summary_source)
+        self.assertNotIn("scan_smart_market", summary_source)
+
+    def test_inception_links_keep_each_clicked_symbol_distinct(self):
+        records = [
+            inception.create_record(snapshot("ASTOR.IS"), "Smart Scanner", NOW),
+            inception.create_record(snapshot("EKGYO.IS"), "Smart Scanner", NOW),
+        ]
+        for record in records:
+            record["dynamic"] = {"elapsed_days": 0}
+        with patch("app.st.markdown") as markdown:
+            app.render_inception_tracking_strips(records)
+        html = markdown.call_args.args[0]
+        self.assertIn('/?scanner_detail=ASTOR.IS', html)
+        self.assertIn('/?scanner_detail=EKGYO.IS', html)
+        self.assertIn("min-height:32px", html)
+        self.assertIn("@media(max-width:760px)", html)
+
     def test_inception_missing_values_render_as_dash(self):
         self.assertEqual(app._inception_display_number(None), "—")
         self.assertEqual(app._inception_display_percent(None), "—")

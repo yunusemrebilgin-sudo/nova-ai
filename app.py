@@ -4788,7 +4788,9 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
     strips = []
     for record in records:
         initial, dynamic = record.get("initial", {}), record.get("dynamic", {})
-        symbol = escape(str(record.get("symbol", "—")))
+        raw_symbol = str(record.get("symbol", "—"))
+        symbol = escape(raw_symbol)
+        symbol_detail_url = f"/?scanner_detail={quote(raw_symbol)}"
         source = escape(str(record.get("source", "—")))
         horizon = escape(str(record.get("horizon", "—")))
         start_price = initial.get("price")
@@ -4827,7 +4829,7 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
         strips.append(dedent(f"""
         <details class="nova-inception-track-strip">
           <summary>
-            <div class="nova-inception-identity"><span class="nova-inception-dot {status_class}"></span><div><strong>{symbol}</strong><small class="source">{source}</small><small>{horizon} • Takipte {_inception_display_number(elapsed_days, 0)}. işlem günü</small></div></div>
+            <div class="nova-inception-identity"><span class="nova-inception-dot {status_class}"></span><div><strong><a class="nova-inception-symbol-link" href="{symbol_detail_url}">{symbol}</a></strong><small class="source">{source}</small><small>{horizon} • Takipte {_inception_display_number(elapsed_days, 0)}. işlem günü</small></div></div>
             <div class="nova-inception-price-track {status_class}">
               <div class="nova-inception-track-line"></div>
               <div class="nova-inception-track-progress" style="left:{start_pos:.2f}%;width:{max(0.0, current_pos - start_pos):.2f}%"></div>
@@ -4865,6 +4867,8 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
       .nova-inception-track-strip summary::-webkit-details-marker {{display:none;}}
       .nova-inception-identity {{display:flex;align-items:flex-start;gap:10px;min-width:0;}}
       .nova-inception-identity strong {{display:block;color:#edf4ff;font-size:1.03rem;line-height:1.1;}}
+      .nova-inception-symbol-link {{display:inline-flex;align-items:center;min-height:32px;color:inherit;text-decoration:none;touch-action:manipulation;}}
+      .nova-inception-symbol-link:hover,.nova-inception-symbol-link:focus-visible {{text-decoration:underline;}}
       .nova-inception-identity small,.nova-inception-metrics small,.nova-inception-detail small {{display:block;color:#8495ad;font-size:.66rem;}}
       .nova-inception-identity small.source {{color:#39bdf8;margin:5px 0 2px;}}
       .nova-inception-dot {{width:9px;height:9px;margin-top:4px;border-radius:50%;background:#64748b;flex:0 0 auto;}}
