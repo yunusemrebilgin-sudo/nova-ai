@@ -1037,11 +1037,12 @@ def follow_window_day_range(holding_period: str, start_pct: int, width_pct: int)
 def normalize_follow_window_horizon(horizon: str) -> str:
     """Map scanner filter horizons to the canonical Dashboard horizons."""
     return {
+        "1-5 gün": "Günlük işlem",
         "5-10 gün": "Kısa vade",
         "10-30 gün": "Kısa vade",
         "1-2 ay": "Orta vade",
         "2-4 ay": "Orta vade",
-    }.get(str(horizon), nova_analytics.normalize_horizon(horizon))
+    }.get(str(horizon), str(horizon))
 
 
 def _follow_window_badge_text(start_day: int, end_day: int, elapsed_days: int) -> tuple[str, str, bool]:
