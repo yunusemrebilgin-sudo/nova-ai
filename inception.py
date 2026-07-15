@@ -67,6 +67,7 @@ def create_record(snapshot: dict, source: str, added_at: datetime) -> dict:
             "stop_loss": float(snapshot["stop_loss"]), "nova_score": int(snapshot.get("nova_score", 0)),
             "confidence": int(snapshot.get("confidence", 0)), "indicators": dict(snapshot.get("indicators", {})),
             "sector": snapshot.get("sector", "Bilinmiyor"), "market_state": snapshot.get("market_state", "Bilinmiyor"),
+            "expected_holding_period": snapshot.get("expected_holding_period"),
             "critical_window_start": critical_start,
             "critical_window_end": critical_end,
         },

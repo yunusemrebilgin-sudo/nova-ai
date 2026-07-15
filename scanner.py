@@ -55,6 +55,12 @@ def _scan_row(
         "EMA20 > EMA50": bool(latest["EMA20"] > latest["EMA50"]),
         "Hacim Oranı": round(float(latest.get("VOLUME_RATIO", 0)), 2),
         "Volatilite": round(float(latest.get("VOLATILITY20", 0)), 2),
+        # Hidden inputs used by the shared Dashboard/Inception follow-window engine.
+        "_follow_momentum10": float(latest.get("MOMENTUM10", 0)),
+        "_follow_ema20": float(latest.get("EMA20", 0)),
+        "_follow_ema50": float(latest.get("EMA50", 0)),
+        "_follow_close": float(latest.get("Close", 0)),
+        "_follow_adx14": float(latest.get("ADX14", 0)),
         "Son Fiyat": round(float(latest["Close"]), 2),
         "Destek": round(support, 2),
         "Direnç": round(resistance, 2),

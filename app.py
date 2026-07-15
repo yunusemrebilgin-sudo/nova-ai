@@ -1034,6 +1034,80 @@ def follow_window_day_range(holding_period: str, start_pct: int, width_pct: int)
     return start_day, end_day
 
 
+def normalize_follow_window_horizon(horizon: str) -> str:
+    """Map scanner filter horizons to the canonical Dashboard horizons."""
+    return {
+        "5-10 gün": "Kısa vade",
+        "10-30 gün": "Kısa vade",
+        "1-2 ay": "Orta vade",
+        "2-4 ay": "Orta vade",
+    }.get(str(horizon), nova_analytics.normalize_horizon(horizon))
+
+
+def _follow_window_badge_text(start_day: int, end_day: int, elapsed_days: int) -> tuple[str, str, bool]:
+    remaining_start = start_day - elapsed_days
+    remaining_end = end_day - elapsed_days
+    if remaining_end < 0:
+        return "GEÇTİ", "passed", False
+    if remaining_end == 0 and end_day > start_day:
+        return "SON GÜN", "last", True
+    if remaining_start <= 0 <= remaining_end:
+        return ("BUGÜN", "active", True) if remaining_start == 0 else ("AKTİF", "active", False)
+    if remaining_start == 1:
+        return "YARIN", "tomorrow", False
+    if remaining_start == remaining_end:
+        return f"{remaining_start}. işlem günü", "warning" if remaining_start == 2 else "neutral", False
+    return f"{remaining_start}-{remaining_end}. işlem günü", "warning" if remaining_start <= 2 else "neutral", False
+
+
+def build_follow_window_badge(
+    *,
+    horizon: str,
+    elapsed_days: int = 0,
+    latest: pd.Series | None = None,
+    score: int | None = None,
+    confidence: int | None = None,
+    expected_return: float | None = None,
+    sell_probability: int | None = None,
+    expected_holding_period_value: str | None = None,
+    critical_window_start: int | None = None,
+    critical_window_end: int | None = None,
+) -> dict[str, object]:
+    """Build the only critical-window and badge representation used by every screen."""
+    canonical_horizon = normalize_follow_window_horizon(horizon)
+    holding_period = str(expected_holding_period_value or "").strip()
+    if latest is not None:
+        holding_period = expected_holding_period(latest, canonical_horizon)
+        if None in (score, confidence, expected_return, sell_probability):
+            raise ValueError("Kritik pencere için skor, güven, getiri ve sat riski gereklidir.")
+        start_pct, width_pct = follow_window_visual(
+            canonical_horizon,
+            int(score),
+            int(confidence),
+            float(expected_return),
+            int(sell_probability),
+            latest,
+        )
+        start_day, end_day = follow_window_day_range(holding_period, start_pct, width_pct)
+    else:
+        if not holding_period or critical_window_start is None or critical_window_end is None:
+            raise ValueError("Kritik pencere snapshot alanları eksik.")
+        start_day, end_day = int(critical_window_start), int(critical_window_end)
+    if start_day < 1 or end_day < start_day:
+        raise ValueError("Kritik pencere geçersiz.")
+    elapsed = max(0, int(elapsed_days))
+    badge_text, tone, pulse = _follow_window_badge_text(start_day, end_day, elapsed)
+    return {
+        "expected_holding_period": holding_period,
+        "critical_window_start": start_day,
+        "critical_window_end": end_day,
+        "days_to_critical": start_day - elapsed,
+        "badge_text": badge_text,
+        "tone": tone,
+        "pulse": pulse,
+    }
+
+
 def support_resistance(data: pd.DataFrame) -> tuple[float, float]:
     recent_data = data.tail(20)
     return float(recent_data["Low"].min()), float(recent_data["High"].max())
@@ -1559,19 +1633,14 @@ def render_trade_horizon_cards(trade_table: pd.DataFrame) -> None:
 def render_pro_follow_window_detail(
     selected_horizon: str,
     selected_trade_row: pd.Series,
+    follow_badge: dict[str, object],
     force: bool = False,
 ) -> None:
     if not force and not st.session_state.get("yeb_pro_active", False):
         return
 
-    holding_period = str(selected_trade_row["Beklenen Taşıma Süresi"])
-    window_start = int(selected_trade_row.get("Takip Penceresi Başlangıç %", 40))
-    window_width = int(selected_trade_row.get("Takip Penceresi Genişlik %", 20))
-    start_day, end_day = follow_window_day_range(holding_period, window_start, window_width)
-    if start_day == end_day:
-        range_text = f"{start_day}. işlem günü"
-    else:
-        range_text = f"{start_day}-{end_day}. işlem günü"
+    holding_period = str(follow_badge["expected_holding_period"])
+    range_text = str(follow_badge["badge_text"])
 
     st.markdown(
         f"""
@@ -2334,7 +2403,15 @@ def render_scanner_stock_summary(symbol: str) -> None:
         key=f"scanner_summary_horizon_{symbol}",
     )
     selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
-    render_pro_follow_window_detail(selected_horizon, selected_trade_row, force=True)
+    selected_follow_badge = build_follow_window_badge(
+        horizon=selected_horizon,
+        latest=latest,
+        score=int(selected_trade_row["Nova Skoru"]),
+        confidence=confidence,
+        expected_return=float(selected_trade_row["Beklenen Getiri %"]),
+        sell_probability=int(selected_trade_row["Sat Sinyali Yakma Riski %"]),
+    )
+    render_pro_follow_window_detail(selected_horizon, selected_trade_row, selected_follow_badge, force=True)
     st.button(
         "Dashboard'ta detaylı aç",
         type="primary",
@@ -2355,34 +2432,29 @@ def scanner_horizon_to_watch_horizon(scanner_horizon: str) -> str:
     return "Uzun vade"
 
 
-def smart_scanner_critical_window(scan_row: dict, horizon: str) -> tuple[int, int] | None:
-    """Resolve a valid critical-window snapshot without another scan or download."""
-    holding_period = str(scan_row.get("Beklenen Taşıma Süresi") or "").strip()
-    if not holding_period:
-        latest = pd.Series(
-            {
-                "VOLATILITY20": scan_row.get("Volatilite"),
-                "ADX14": scan_row.get("ADX"),
-                "EMA20": 1 if scan_row.get("EMA20 > EMA50") else 0,
-                "EMA50": 0,
-                "Close": scan_row.get("Son Fiyat", 0),
-            }
-        )
-        try:
-            holding_period = str(nova_analytics.expected_holding_period(latest, horizon)).strip()
-        except (KeyError, TypeError, ValueError):
-            return None
-    if not holding_period or not re.search(r"\d", holding_period):
-        return None
+def smart_scanner_follow_badge(scan_row: dict, horizon: str) -> dict[str, object] | None:
+    """Adapt a scanner row to the shared Dashboard/Inception badge engine."""
+    latest = pd.Series(
+        {
+            "VOLATILITY20": scan_row.get("Volatilite"),
+            "ADX14": scan_row.get("_follow_adx14"),
+            "MOMENTUM10": scan_row.get("_follow_momentum10"),
+            "EMA20": scan_row.get("_follow_ema20"),
+            "EMA50": scan_row.get("_follow_ema50"),
+            "Close": scan_row.get("_follow_close", scan_row.get("Son Fiyat", 0)),
+        }
+    )
     try:
-        start, end = follow_window_day_range(
-            holding_period,
-            int(scan_row.get("Takip Penceresi Başlangıç %", 40)),
-            int(scan_row.get("Takip Penceresi Genişlik %", 20)),
+        return build_follow_window_badge(
+            horizon=horizon,
+            latest=latest,
+            score=int(scan_row["Nova Score"]),
+            confidence=int(scan_row["AI Güven Endeksi"]),
+            expected_return=float(scan_row["Beklenen Getiri %"]),
+            sell_probability=int(scan_row["Sat Riski %"]),
         )
-    except (TypeError, ValueError):
+    except (KeyError, TypeError, ValueError):
         return None
-    return (start, end) if 1 <= start <= end else None
 
 
 def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
@@ -2410,8 +2482,15 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
             skipped_symbols.append(symbol)
             continue
         scan_row = matching.iloc[0].to_dict()
-        critical_window = smart_scanner_critical_window(scan_row, horizon)
-        if critical_window is None:
+        follow_badge = smart_scanner_follow_badge(scan_row, horizon)
+        if follow_badge is None:
+            try:
+                raw = nova_scanner.download_price_data(symbol, f"inception-add-{now_istanbul().isoformat()}")
+                refreshed_row = nova_scanner._scan_row(symbol, symbol, raw, normalize_follow_window_horizon(horizon))
+                follow_badge = smart_scanner_follow_badge(refreshed_row or {}, horizon)
+            except Exception as exc:
+                logger.warning("Smart Scanner Inception add preserved | SYMBOL=%s error=%s", symbol, exc)
+        if follow_badge is None:
             invalid_window_symbols.append(symbol)
             continue
         price = float(scan_row["Son Fiyat"])
@@ -2423,7 +2502,9 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
             "confidence": scan_row["AI Güven Endeksi"], "indicators": {k: scan_row.get(k) for k in ("RSI", "MACD", "Volatilite", "Hacim Oranı")},
             "sector": "Bilinmiyor", "market_state": scan_row["Trend"],
         }
-        snapshot["critical_window_start"], snapshot["critical_window_end"] = critical_window
+        snapshot["expected_holding_period"] = follow_badge["expected_holding_period"]
+        snapshot["critical_window_start"] = follow_badge["critical_window_start"]
+        snapshot["critical_window_end"] = follow_badge["critical_window_end"]
         active, added = nova_inception.add_record(active, snapshot, "Smart Scanner", now_istanbul())
         if added:
             added_symbols.append(symbol)
@@ -3176,6 +3257,14 @@ def render_dashboard_page() -> None:
     selected_score = int(selected_trade_row["Nova Skoru"])
     selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
     selected_sell_probability = int(selected_trade_row["Sat Sinyali Yakma Riski %"])
+    selected_follow_badge = build_follow_window_badge(
+        horizon=selected_horizon,
+        latest=latest,
+        score=selected_score,
+        confidence=confidence,
+        expected_return=selected_expected_return,
+        sell_probability=selected_sell_probability,
+    )
     first_target, second_target, stop_loss, risk_reward = target_stop_levels(
         latest,
         support_level,
@@ -3214,7 +3303,7 @@ def render_dashboard_page() -> None:
     with dashboard_tabs[0]:
         st.markdown("#### Vade Senaryoları")
         render_trade_horizon_cards(trade_table)
-        render_pro_follow_window_detail(selected_horizon, selected_trade_row)
+        render_pro_follow_window_detail(selected_horizon, selected_trade_row, selected_follow_badge)
         sector = "Bilinmiyor" if selected_symbol_row.empty else str(selected_symbol_row.iloc[0].get("sector", "Bilinmiyor"))
         inception_snapshot = {
             "symbol": ticker, "horizon": selected_horizon, "price": display_price,
@@ -3225,16 +3314,9 @@ def render_dashboard_page() -> None:
                            "ema20": safe_float(latest.get("EMA20")), "ema50": safe_float(latest.get("EMA50")),
                            "volatility": safe_float(latest.get("VOLATILITY20"))},
             "sector": sector, "market_state": trend_text(latest),
-            "critical_window_start": follow_window_day_range(
-                str(selected_trade_row["Beklenen Taşıma Süresi"]),
-                int(selected_trade_row.get("Takip Penceresi Başlangıç %", 40)),
-                int(selected_trade_row.get("Takip Penceresi Genişlik %", 20)),
-            )[0],
-            "critical_window_end": follow_window_day_range(
-                str(selected_trade_row["Beklenen Taşıma Süresi"]),
-                int(selected_trade_row.get("Takip Penceresi Başlangıç %", 40)),
-                int(selected_trade_row.get("Takip Penceresi Genişlik %", 20)),
-            )[1],
+            "expected_holding_period": selected_follow_badge["expected_holding_period"],
+            "critical_window_start": selected_follow_badge["critical_window_start"],
+            "critical_window_end": selected_follow_badge["critical_window_end"],
         }
         render_add_to_ai_watchlist(ticker, bist_symbols, selected_horizon, inception_snapshot)
         render_one_month_trade_trends(data, ticker)
@@ -4583,11 +4665,36 @@ def update_inception_records(active: list[dict], now: datetime, downloader=nova_
                     used = raw.tail(1)
             row = nova_scanner._scan_row(record["symbol"], record["symbol"], raw, record.get("horizon", "1-5 gün"))
             if row is None or used.empty:
+                logger.warning("Inception critical migration skipped | SYMBOL=%s reason=market_data_unavailable", record.get("symbol"))
                 return active, False, None
-            updated.append(nova_inception.update_record(record, row, used, now))
+            record_for_update = record
+            if record.get("source") == "Smart Scanner":
+                corrected_badge = smart_scanner_follow_badge(row, str(record.get("horizon", "Günlük işlem")))
+                if corrected_badge is None:
+                    logger.warning("Inception critical migration skipped | SYMBOL=%s reason=analysis_data_unavailable", record.get("symbol"))
+                else:
+                    current_window = (
+                        record.get("initial", {}).get("critical_window_start"),
+                        record.get("initial", {}).get("critical_window_end"),
+                    )
+                    corrected_window = (
+                        corrected_badge["critical_window_start"],
+                        corrected_badge["critical_window_end"],
+                    )
+                    if current_window != corrected_window:
+                        record_for_update = {**record, "initial": dict(record.get("initial", {}))}
+                        record_for_update["initial"]["expected_holding_period"] = corrected_badge["expected_holding_period"]
+                        record_for_update["initial"]["critical_window_start"] = corrected_window[0]
+                        record_for_update["initial"]["critical_window_end"] = corrected_window[1]
+                        logger.info(
+                            "Inception critical snapshot migrated | SYMBOL=%s old=%s new=%s",
+                            record.get("symbol"), current_window, corrected_window,
+                        )
+            updated.append(nova_inception.update_record(record_for_update, row, used, now))
             if row.get("_market_data_time"):
                 market_times.append(row["_market_data_time"])
-        except Exception:
+        except Exception as exc:
+            logger.warning("Inception update preserved existing record | SYMBOL=%s error=%s", record.get("symbol"), exc)
             return active, False, None
     newest = max(market_times) if market_times else None
     return updated, True, newest
@@ -4636,36 +4743,24 @@ def _inception_price_positions(start: object, current: object, target: object) -
 
 
 def inception_critical_day_state(record: dict, as_of: datetime | None = None) -> dict[str, object]:
-    """Return the display state for an immutable Inception critical-window snapshot."""
+    """Adapt an Inception snapshot to the single shared follow-window engine."""
     initial = record.get("initial", {})
-    try:
-        start_day = int(initial.get("critical_window_start"))
-        end_day = int(initial.get("critical_window_end"))
-    except (TypeError, ValueError):
-        return {"label": "—", "tone": "missing", "pulse": False, "days_to_critical": None}
-    if start_day < 0 or end_day < start_day:
-        return {"label": "—", "tone": "missing", "pulse": False, "days_to_critical": None}
     dynamic_elapsed = record.get("dynamic", {}).get("elapsed_days")
     if as_of is None and isinstance(dynamic_elapsed, (int, float)) and math.isfinite(float(dynamic_elapsed)):
         elapsed = int(dynamic_elapsed)
     else:
         elapsed = nova_inception.trading_days(record.get("added_at"), as_of or now_istanbul())
-    remaining = start_day - elapsed
-    if elapsed > end_day:
-        return {"label": "GEÇTİ", "tone": "passed", "pulse": False, "days_to_critical": remaining}
-    if elapsed == end_day and end_day > start_day:
-        return {"label": "SON GÜN", "tone": "last", "pulse": True, "days_to_critical": remaining}
-    if elapsed == start_day:
-        return {"label": "BUGÜN", "tone": "active", "pulse": True, "days_to_critical": remaining}
-    if start_day < elapsed < end_day:
-        return {"label": "AKTİF", "tone": "active", "pulse": False, "days_to_critical": remaining}
-    if remaining == 1:
-        return {"label": "YARIN", "tone": "tomorrow", "pulse": False, "days_to_critical": remaining}
-    if remaining == 2:
-        return {"label": "2 GÜN", "tone": "warning", "pulse": False, "days_to_critical": remaining}
-    if remaining >= 3:
-        return {"label": f"{remaining} GÜN", "tone": "neutral", "pulse": False, "days_to_critical": remaining}
-    return {"label": "—", "tone": "missing", "pulse": False, "days_to_critical": remaining}
+    try:
+        result = build_follow_window_badge(
+            horizon=str(record.get("horizon", "Günlük işlem")),
+            elapsed_days=elapsed,
+            expected_holding_period_value=str(initial.get("expected_holding_period") or record.get("horizon", "-")),
+            critical_window_start=initial.get("critical_window_start"),
+            critical_window_end=initial.get("critical_window_end"),
+        )
+    except (TypeError, ValueError):
+        return {"label": "—", "badge_text": "—", "tone": "missing", "pulse": False, "days_to_critical": None}
+    return {**result, "label": result["badge_text"]}
 
 
 def render_inception_tracking_strips(records: list[dict]) -> None:

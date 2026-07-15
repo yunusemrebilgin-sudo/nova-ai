@@ -187,15 +187,42 @@ class InceptionTests(unittest.TestCase):
         self.assertNotIn("Inception’a Hisse Ekle", source)
         self.assertNotIn("smart_scanner_row_add_", source)
 
-    def test_scanner_batch_add_reuses_scan_results_without_downloading_prices(self):
+    def test_scanner_batch_add_reuses_complete_results_before_safe_refresh(self):
         source = inspect.getsource(app.render_scanner_watchlist_add)
         self.assertIn('st.session_state.get("smart_scanner_results"', source)
-        self.assertNotIn("download_price_data", source)
+        self.assertLess(source.index("smart_scanner_follow_badge(scan_row"), source.index("download_price_data"))
         self.assertEqual(source.count("save_current_user_pro_data()"), 1)
 
-    def test_scanner_current_holding_period_creates_critical_window(self):
-        row = {"Beklenen Taşıma Süresi": "1-5 işlem günü"}
-        self.assertEqual(app.smart_scanner_critical_window(row, "Günlük işlem"), (3, 3))
+    def test_scanner_coarse_horizon_normalizes_to_dashboard_horizon(self):
+        self.assertEqual(app.normalize_follow_window_horizon("1-5 gün"), "Günlük işlem")
+
+    def test_shared_engine_preserves_daily_volatility_split(self):
+        base = {"MOMENTUM10": 0, "EMA20": 100, "EMA50": 99, "Close": 101, "ADX14": 20}
+        with patch("app.follow_window_visual", return_value=(40, 20)):
+            low = app.build_follow_window_badge(horizon="1-5 gün", latest=pd.Series({**base, "VOLATILITY20": 2}), score=60, confidence=70, expected_return=6, sell_probability=40)
+            high = app.build_follow_window_badge(horizon="Günlük işlem", latest=pd.Series({**base, "VOLATILITY20": 5}), score=60, confidence=70, expected_return=6, sell_probability=40)
+        self.assertEqual(low["expected_holding_period"], "1-5 işlem günü")
+        self.assertEqual(high["expected_holding_period"], "1-3 işlem günü")
+
+    def test_live_five_symbol_windows_match_inception_snapshots(self):
+        cases = {
+            "EKGYO.IS": (2.0, (36, 13), (2, 3), "2-3. işlem günü"),
+            "KRDMA.IS": (2.0, (34, 13), (2, 3), "2-3. işlem günü"),
+            "EREGL.IS": (2.0, (37, 12), (2, 3), "2-3. işlem günü"),
+            "ISGYO.IS": (5.0, (44, 22), (2, 2), "2. işlem günü"),
+            "ASTOR.IS": (5.0, (41, 19), (2, 2), "2. işlem günü"),
+        }
+        for symbol, (volatility, visual, window, text) in cases.items():
+            latest = pd.Series({"VOLATILITY20": volatility, "MOMENTUM10": 0, "EMA20": 100, "EMA50": 99, "Close": 101, "ADX14": 20})
+            with patch("app.follow_window_visual", return_value=visual):
+                badge = app.build_follow_window_badge(horizon="1-5 gün", latest=latest, score=70, confidence=70, expected_return=6, sell_probability=40)
+            self.assertEqual((badge["critical_window_start"], badge["critical_window_end"]), window, symbol)
+            self.assertEqual(badge["badge_text"], text, symbol)
+            item = snapshot(symbol); item["expected_holding_period"] = badge["expected_holding_period"]
+            item["critical_window_start"], item["critical_window_end"] = window
+            record = inception.create_record(item, "Smart Scanner", NOW)
+            record["dynamic"] = {"elapsed_days": 0}
+            self.assertEqual(app.inception_critical_day_state(record)["badge_text"], text, symbol)
 
     def test_dashboard_holding_period_uses_scanner_calculator(self):
         latest = pd.Series({"VOLATILITY20": 2.0})
@@ -204,24 +231,40 @@ class InceptionTests(unittest.TestCase):
         calculator.assert_called_once_with(latest, "Günlük işlem")
 
     def test_scanner_missing_holding_period_uses_shared_calculator(self):
-        row = {"Beklenen Taşıma Süresi": None, "Volatilite": 2.0, "Son Fiyat": 100}
-        with patch("app.nova_analytics.expected_holding_period", return_value="1-5 işlem günü") as calculator:
-            window = app.smart_scanner_critical_window(row, "Günlük işlem")
-        self.assertEqual(window, (3, 3))
-        calculator.assert_called_once()
+        row = {"Volatilite": 2.0, "Nova Score": 70, "AI Güven Endeksi": 70, "Beklenen Getiri %": 6, "Sat Riski %": 40,
+               "_follow_momentum10": 0, "_follow_ema20": 100, "_follow_ema50": 99, "_follow_close": 101, "_follow_adx14": 20}
+        with patch("app.follow_window_visual", return_value=(40, 20)):
+            badge = app.smart_scanner_follow_badge(row, "1-5 gün")
+        self.assertEqual((badge["critical_window_start"], badge["critical_window_end"]), (3, 3))
 
     def test_scanner_add_is_blocked_when_window_cannot_be_resolved(self):
-        row = {"Beklenen Taşıma Süresi": None}
-        with patch("app.nova_analytics.expected_holding_period", side_effect=ValueError):
-            self.assertIsNone(app.smart_scanner_critical_window(row, "Günlük işlem"))
+        self.assertIsNone(app.smart_scanner_follow_badge({}, "Günlük işlem"))
         source = inspect.getsource(app.render_scanner_watchlist_add)
-        self.assertLess(source.index("if critical_window is None"), source.index("nova_inception.add_record"))
+        self.assertLess(source.index("if follow_badge is None"), source.index("nova_inception.add_record"))
         self.assertIn("Inception kaydı oluşturulmadı", source)
 
     def test_failed_update_preserves_old_records(self):
         records = [inception.create_record(snapshot(), "Dashboard", NOW)]
         updated, success, _ = app.update_inception_records(records, NOW, Mock(return_value=pd.DataFrame()))
         self.assertFalse(success); self.assertIs(updated, records)
+
+    def test_old_wrong_scanner_snapshot_is_migrated_per_symbol(self):
+        record = inception.create_record(snapshot("EKGYO.IS"), "Smart Scanner", NOW)
+        record["initial"]["critical_window_start"] = 3
+        record["initial"]["critical_window_end"] = 3
+        row = {**scan_row(), "Volatilite": 2.0, "Sat Riski %": 40,
+               "_follow_momentum10": 0, "_follow_ema20": 100, "_follow_ema50": 99,
+               "_follow_close": 101, "_follow_adx14": 20}
+        with patch("app.nova_scanner._scan_row", return_value=row), patch("app.follow_window_visual", return_value=(36, 13)):
+            updated, success, _ = app.update_inception_records([record], NOW.replace(hour=19), Mock(return_value=frame()))
+        self.assertTrue(success)
+        self.assertEqual((updated[0]["initial"]["critical_window_start"], updated[0]["initial"]["critical_window_end"]), (2, 3))
+
+    def test_migration_missing_market_data_preserves_record(self):
+        record = inception.create_record(snapshot("EKGYO.IS"), "Smart Scanner", NOW)
+        updated, success, _ = app.update_inception_records([record], NOW, Mock(return_value=pd.DataFrame()))
+        self.assertFalse(success)
+        self.assertIs(updated[0], record)
 
     def test_old_supabase_snapshot_gets_safe_inception_defaults(self):
         response = Mock(); response.json.return_value = [{"open_positions": [], "closed_trades": [], "ai_watchlist": [{"symbol": "ASTOR.IS"}]}]
@@ -267,8 +310,8 @@ class InceptionTests(unittest.TestCase):
     def test_inception_critical_day_states_and_pulse_scope(self):
         record = inception.create_record(snapshot(), "Dashboard", NOW)
         expected = {
-            0: ("3 GÜN", "neutral", False),
-            1: ("2 GÜN", "warning", False),
+            0: ("3-5. işlem günü", "neutral", False),
+            1: ("2-4. işlem günü", "warning", False),
             2: ("YARIN", "tomorrow", False),
             3: ("BUGÜN", "active", True),
             4: ("AKTİF", "active", False),
@@ -288,8 +331,8 @@ class InceptionTests(unittest.TestCase):
         second = inception.create_record(second_snapshot, "Dashboard", NOW)
         first["dynamic"] = {"elapsed_days": 1}
         second["dynamic"] = {"elapsed_days": 1}
-        self.assertEqual(app.inception_critical_day_state(first)["label"], "2 GÜN")
-        self.assertEqual(app.inception_critical_day_state(second)["label"], "3 GÜN")
+        self.assertEqual(app.inception_critical_day_state(first)["label"], "2-4. işlem günü")
+        self.assertEqual(app.inception_critical_day_state(second)["label"], "3-5. işlem günü")
 
     def test_inception_critical_day_missing_snapshot_is_dash(self):
         record = inception.create_record(snapshot(), "Dashboard", NOW)

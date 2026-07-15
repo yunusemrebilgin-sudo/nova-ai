@@ -165,9 +165,13 @@ def result_label(score: int, confidence: int, risk: int) -> str:
     return "🔴 Uzak Dur"
 
 
+def normalize_horizon(selected_horizon: str) -> str:
+    return "Günlük işlem" if str(selected_horizon) == "1-5 gün" else str(selected_horizon)
+
+
 def expected_holding_period(latest: pd.Series, selected_horizon: str = "Günlük işlem") -> str:
+    selected_horizon = normalize_horizon(selected_horizon)
     scanner_horizon_periods = {
-        "1-5 gün": "1-5 işlem günü",
         "5-10 gün": "5-10 işlem günü",
         "10-30 gün": "10-30 işlem günü",
         "1-2 ay": "1-2 ay",
