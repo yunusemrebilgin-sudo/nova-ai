@@ -39,6 +39,13 @@ class InceptionTests(unittest.TestCase):
         active, _ = inception.add_record([], snapshot(), "Smart Scanner", NOW)
         self.assertEqual(active[0]["source"], "Smart Scanner")
 
+    def test_smart_scanner_record_rejects_null_critical_window(self):
+        invalid = snapshot()
+        invalid["critical_window_start"] = None
+        invalid["critical_window_end"] = None
+        with self.assertRaises(ValueError):
+            inception.add_record([], invalid, "Smart Scanner", NOW)
+
     def test_duplicate_active_symbol_is_rejected(self):
         active, _ = inception.add_record([], snapshot(), "Dashboard", NOW)
         same, added = inception.add_record(active, snapshot(), "Smart Scanner", NOW)
@@ -70,9 +77,53 @@ class InceptionTests(unittest.TestCase):
             inception.create_record(snapshot(), "Dashboard", NOW),
             scan_row(),
             market_sessions,
-            NOW + timedelta(days=3),
+            (NOW + timedelta(days=3)).replace(hour=19),
         )
         self.assertEqual(updated["dynamic"]["elapsed_days"], 1)
+
+    def test_friday_after_close_counts_completed_monday_as_first_session(self):
+        added = datetime(2026, 7, 10, 19, 0, tzinfo=app.app_timezone())
+        raw = frame(); raw.index = pd.to_datetime(["2026-07-10", "2026-07-13"])
+        updated = inception.update_record(
+            inception.create_record(snapshot(), "Dashboard", added), scan_row(), raw,
+            datetime(2026, 7, 13, 18, 5, tzinfo=app.app_timezone()),
+        )
+        self.assertEqual(updated["dynamic"]["elapsed_days"], 1)
+
+    def test_saturday_add_counts_completed_monday_as_first_session(self):
+        added = datetime(2026, 7, 11, 12, 0, tzinfo=app.app_timezone())
+        raw = frame(); raw.index = pd.to_datetime(["2026-07-10", "2026-07-13"])
+        updated = inception.update_record(
+            inception.create_record(snapshot(), "Dashboard", added), scan_row(), raw,
+            datetime(2026, 7, 13, 18, 5, tzinfo=app.app_timezone()),
+        )
+        self.assertEqual(updated["dynamic"]["elapsed_days"], 1)
+
+    def test_first_session_after_holiday_counts_as_one(self):
+        added = datetime(2026, 7, 15, 12, 0, tzinfo=app.app_timezone())
+        raw = frame(); raw.index = pd.to_datetime(["2026-07-14", "2026-07-16"])
+        updated = inception.update_record(
+            inception.create_record(snapshot(), "Dashboard", added), scan_row(), raw,
+            datetime(2026, 7, 16, 18, 5, tzinfo=app.app_timezone()),
+        )
+        self.assertEqual(updated["dynamic"]["elapsed_days"], 1)
+
+    def test_only_starting_session_remains_zero(self):
+        added = datetime(2026, 7, 14, 19, 0, tzinfo=app.app_timezone())
+        raw = frame().iloc[:1]
+        updated = inception.update_record(
+            inception.create_record(snapshot(), "Dashboard", added), scan_row(), raw, added,
+        )
+        self.assertEqual(updated["dynamic"]["elapsed_days"], 0)
+
+    def test_open_current_session_bar_is_not_counted(self):
+        added = datetime(2026, 7, 14, 19, 0, tzinfo=app.app_timezone())
+        raw = frame(); raw.index = pd.to_datetime(["2026-07-14", "2026-07-15"])
+        updated = inception.update_record(
+            inception.create_record(snapshot(), "Dashboard", added), scan_row(), raw,
+            datetime(2026, 7, 15, 12, 0, tzinfo=app.app_timezone()),
+        )
+        self.assertEqual(updated["dynamic"]["elapsed_days"], 0)
 
     def test_target_progress_and_max_adverse(self):
         updated = inception.update_record(inception.create_record(snapshot(), "Dashboard", NOW), scan_row(), frame(low=90), NOW + timedelta(days=1))
@@ -142,6 +193,31 @@ class InceptionTests(unittest.TestCase):
         self.assertNotIn("download_price_data", source)
         self.assertEqual(source.count("save_current_user_pro_data()"), 1)
 
+    def test_scanner_current_holding_period_creates_critical_window(self):
+        row = {"Beklenen Taşıma Süresi": "1-5 işlem günü"}
+        self.assertEqual(app.smart_scanner_critical_window(row, "Günlük işlem"), (3, 3))
+
+    def test_dashboard_holding_period_uses_scanner_calculator(self):
+        latest = pd.Series({"VOLATILITY20": 2.0})
+        with patch("app.nova_analytics.expected_holding_period", return_value="1-5 işlem günü") as calculator:
+            self.assertEqual(app.expected_holding_period(latest, "Günlük işlem"), "1-5 işlem günü")
+        calculator.assert_called_once_with(latest, "Günlük işlem")
+
+    def test_scanner_missing_holding_period_uses_shared_calculator(self):
+        row = {"Beklenen Taşıma Süresi": None, "Volatilite": 2.0, "Son Fiyat": 100}
+        with patch("app.nova_analytics.expected_holding_period", return_value="1-5 işlem günü") as calculator:
+            window = app.smart_scanner_critical_window(row, "Günlük işlem")
+        self.assertEqual(window, (3, 3))
+        calculator.assert_called_once()
+
+    def test_scanner_add_is_blocked_when_window_cannot_be_resolved(self):
+        row = {"Beklenen Taşıma Süresi": None}
+        with patch("app.nova_analytics.expected_holding_period", side_effect=ValueError):
+            self.assertIsNone(app.smart_scanner_critical_window(row, "Günlük işlem"))
+        source = inspect.getsource(app.render_scanner_watchlist_add)
+        self.assertLess(source.index("if critical_window is None"), source.index("nova_inception.add_record"))
+        self.assertIn("Inception kaydı oluşturulmadı", source)
+
     def test_failed_update_preserves_old_records(self):
         records = [inception.create_record(snapshot(), "Dashboard", NOW)]
         updated, success, _ = app.update_inception_records(records, NOW, Mock(return_value=pd.DataFrame()))
@@ -203,6 +279,17 @@ class InceptionTests(unittest.TestCase):
             record["dynamic"] = {"elapsed_days": elapsed}
             result = app.inception_critical_day_state(record)
             self.assertEqual((result["label"], result["tone"], result["pulse"]), state)
+
+    def test_each_inception_record_uses_its_own_elapsed_day_and_window(self):
+        first = inception.create_record(snapshot("EKGYO.IS"), "Dashboard", NOW)
+        second_snapshot = snapshot("EREGL.IS")
+        second_snapshot["critical_window_start"] = 4
+        second_snapshot["critical_window_end"] = 6
+        second = inception.create_record(second_snapshot, "Dashboard", NOW)
+        first["dynamic"] = {"elapsed_days": 1}
+        second["dynamic"] = {"elapsed_days": 1}
+        self.assertEqual(app.inception_critical_day_state(first)["label"], "2 GÜN")
+        self.assertEqual(app.inception_critical_day_state(second)["label"], "3 GÜN")
 
     def test_inception_critical_day_missing_snapshot_is_dash(self):
         record = inception.create_record(snapshot(), "Dashboard", NOW)

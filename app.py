@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import re
@@ -28,6 +29,8 @@ import scanner as nova_scanner
 import inception as nova_inception
 import user_store
 from theme import apply_terminal_theme, init_theme_state, set_theme_from_toggle, theme_tokens
+
+logger = logging.getLogger(__name__)
 
 DECISION_SUPPORT_DISCLAIMER = "Bu platform yalnızca karar destek amaçlıdır. Kesin yatırım tavsiyesi vermez."
 DISCLAIMER = DECISION_SUPPORT_DISCLAIMER
@@ -781,22 +784,8 @@ def advanced_score_cards(latest: pd.Series, general_score: int, confidence: int)
 
 
 def expected_holding_period(latest: pd.Series, selected_horizon: str) -> str:
-    adx = safe_float(latest.get("ADX14"))
-    volatility = safe_float(latest.get("VOLATILITY20"))
-
-    if selected_horizon == "Günlük işlem":
-        return "1-5 işlem günü" if volatility <= 4 else "1-3 işlem günü"
-    if selected_horizon == "Kısa vade":
-        if adx >= 25 and volatility <= 3:
-            return "12-18 işlem günü"
-        return "8-12 işlem günü"
-    if selected_horizon == "Orta vade":
-        if adx >= 25 and latest["EMA20"] > latest["EMA50"]:
-            return "2-4 ay"
-        return "20-35 işlem günü"
-    if adx >= 25 and latest["Close"] > latest["EMA50"]:
-        return "6-12 ay"
-    return "2-4 ay"
+    """Use the scanner analytics implementation as the single calculation source."""
+    return nova_analytics.expected_holding_period(latest, selected_horizon)
 
 
 def expected_return_potential(latest: pd.Series, resistance_level: float, selected_horizon: str) -> float:
@@ -2366,6 +2355,36 @@ def scanner_horizon_to_watch_horizon(scanner_horizon: str) -> str:
     return "Uzun vade"
 
 
+def smart_scanner_critical_window(scan_row: dict, horizon: str) -> tuple[int, int] | None:
+    """Resolve a valid critical-window snapshot without another scan or download."""
+    holding_period = str(scan_row.get("Beklenen Taşıma Süresi") or "").strip()
+    if not holding_period:
+        latest = pd.Series(
+            {
+                "VOLATILITY20": scan_row.get("Volatilite"),
+                "ADX14": scan_row.get("ADX"),
+                "EMA20": 1 if scan_row.get("EMA20 > EMA50") else 0,
+                "EMA50": 0,
+                "Close": scan_row.get("Son Fiyat", 0),
+            }
+        )
+        try:
+            holding_period = str(nova_analytics.expected_holding_period(latest, horizon)).strip()
+        except (KeyError, TypeError, ValueError):
+            return None
+    if not holding_period or not re.search(r"\d", holding_period):
+        return None
+    try:
+        start, end = follow_window_day_range(
+            holding_period,
+            int(scan_row.get("Takip Penceresi Başlangıç %", 40)),
+            int(scan_row.get("Takip Penceresi Genişlik %", 20)),
+        )
+    except (TypeError, ValueError):
+        return None
+    return (start, end) if 1 <= start <= end else None
+
+
 def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
     if not has_pro_access():
         st.error("AI takip listesi YEB PRO kullanıcılarına açıktır.")
@@ -2378,6 +2397,7 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
     scan_table = normalize_smart_scanner_table(st.session_state.get("smart_scanner_results", pd.DataFrame()))
     added_symbols = []
     skipped_symbols = []
+    invalid_window_symbols = []
     for symbol in dict.fromkeys(item.strip().upper() for item in symbols if item.strip()):
         already_added = any(
             str(item.get("symbol", "")).upper() == symbol and item.get("status", "active") == "active" for item in active
@@ -2390,6 +2410,10 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
             skipped_symbols.append(symbol)
             continue
         scan_row = matching.iloc[0].to_dict()
+        critical_window = smart_scanner_critical_window(scan_row, horizon)
+        if critical_window is None:
+            invalid_window_symbols.append(symbol)
+            continue
         price = float(scan_row["Son Fiyat"])
         expected = float(scan_row["Beklenen Getiri %"])
         snapshot = {
@@ -2399,15 +2423,7 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
             "confidence": scan_row["AI Güven Endeksi"], "indicators": {k: scan_row.get(k) for k in ("RSI", "MACD", "Volatilite", "Hacim Oranı")},
             "sector": "Bilinmiyor", "market_state": scan_row["Trend"],
         }
-        holding_period = scan_row.get("Beklenen Taşıma Süresi")
-        if holding_period:
-            window_start, window_end = follow_window_day_range(
-                str(holding_period),
-                int(scan_row.get("Takip Penceresi Başlangıç %", 40)),
-                int(scan_row.get("Takip Penceresi Genişlik %", 20)),
-            )
-            snapshot["critical_window_start"] = window_start
-            snapshot["critical_window_end"] = window_end
+        snapshot["critical_window_start"], snapshot["critical_window_end"] = critical_window
         active, added = nova_inception.add_record(active, snapshot, "Smart Scanner", now_istanbul())
         if added:
             added_symbols.append(symbol)
@@ -2417,6 +2433,9 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
     if added_symbols:
         names = ", ".join(symbol.replace(".IS", "") for symbol in added_symbols)
         st.session_state.scanner_add_notice = f"{names} Inception’a kaydedildi."
+    if invalid_window_symbols:
+        names = ", ".join(symbol.replace(".IS", "") for symbol in invalid_window_symbols)
+        st.error(f"{names} için geçerli kritik takip penceresi üretilemedi; Inception kaydı oluşturulmadı.")
     elif skipped_symbols:
         st.session_state.scanner_add_notice = "Seçilen hisseler zaten Inception’da veya güncel tarama sonucunda bulunamadı."
     for key in ("scanner_add", "scanner_add_batch", "watch_horizon"):
@@ -4623,9 +4642,9 @@ def inception_critical_day_state(record: dict, as_of: datetime | None = None) ->
         start_day = int(initial.get("critical_window_start"))
         end_day = int(initial.get("critical_window_end"))
     except (TypeError, ValueError):
-        return {"label": "—", "tone": "missing", "pulse": False}
+        return {"label": "—", "tone": "missing", "pulse": False, "days_to_critical": None}
     if start_day < 0 or end_day < start_day:
-        return {"label": "—", "tone": "missing", "pulse": False}
+        return {"label": "—", "tone": "missing", "pulse": False, "days_to_critical": None}
     dynamic_elapsed = record.get("dynamic", {}).get("elapsed_days")
     if as_of is None and isinstance(dynamic_elapsed, (int, float)) and math.isfinite(float(dynamic_elapsed)):
         elapsed = int(dynamic_elapsed)
@@ -4633,20 +4652,20 @@ def inception_critical_day_state(record: dict, as_of: datetime | None = None) ->
         elapsed = nova_inception.trading_days(record.get("added_at"), as_of or now_istanbul())
     remaining = start_day - elapsed
     if elapsed > end_day:
-        return {"label": "GEÇTİ", "tone": "passed", "pulse": False}
+        return {"label": "GEÇTİ", "tone": "passed", "pulse": False, "days_to_critical": remaining}
     if elapsed == end_day and end_day > start_day:
-        return {"label": "SON GÜN", "tone": "last", "pulse": True}
+        return {"label": "SON GÜN", "tone": "last", "pulse": True, "days_to_critical": remaining}
     if elapsed == start_day:
-        return {"label": "BUGÜN", "tone": "active", "pulse": True}
+        return {"label": "BUGÜN", "tone": "active", "pulse": True, "days_to_critical": remaining}
     if start_day < elapsed < end_day:
-        return {"label": "AKTİF", "tone": "active", "pulse": False}
+        return {"label": "AKTİF", "tone": "active", "pulse": False, "days_to_critical": remaining}
     if remaining == 1:
-        return {"label": "YARIN", "tone": "tomorrow", "pulse": False}
+        return {"label": "YARIN", "tone": "tomorrow", "pulse": False, "days_to_critical": remaining}
     if remaining == 2:
-        return {"label": "2 GÜN", "tone": "warning", "pulse": False}
+        return {"label": "2 GÜN", "tone": "warning", "pulse": False, "days_to_critical": remaining}
     if remaining >= 3:
-        return {"label": f"{remaining} GÜN", "tone": "neutral", "pulse": False}
-    return {"label": "—", "tone": "missing", "pulse": False}
+        return {"label": f"{remaining} GÜN", "tone": "neutral", "pulse": False, "days_to_critical": remaining}
+    return {"label": "—", "tone": "missing", "pulse": False, "days_to_critical": remaining}
 
 
 def render_inception_tracking_strips(records: list[dict]) -> None:
@@ -4676,6 +4695,16 @@ def render_inception_tracking_strips(records: list[dict]) -> None:
             pass
         target_label = "Hedef Gerçekleşti" if target_reached else _inception_display_percent(target_remaining)
         critical = inception_critical_day_state(record)
+        logger.info(
+            "Inception critical day | SYMBOL=%s critical_window_start=%s critical_window_end=%s "
+            "today=%s days_to_critical=%s badge_text=%s",
+            record.get("symbol"),
+            initial.get("critical_window_start"),
+            initial.get("critical_window_end"),
+            now_istanbul().date().isoformat(),
+            critical["days_to_critical"],
+            critical["label"],
+        )
         critical_classes = f"nova-inception-critical {critical['tone']}"
         if critical["pulse"]:
             critical_classes += " pulse"

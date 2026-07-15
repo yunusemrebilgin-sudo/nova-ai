@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 SCHEMA_VERSION = 1
+ISTANBUL_TIMEZONE = ZoneInfo("Europe/Istanbul")
 HORIZON_DAYS = {"1-5 gün": 5, "Günlük işlem": 5, "5-10 gün": 10, "Kısa vade": 10,
                 "10-30 gün": 30, "1-2 ay": 44, "Orta vade": 44, "2-4 ay": 88, "Uzun vade": 126}
 
@@ -18,8 +20,43 @@ def trading_days(start: str, end: datetime) -> int:
     return max(0, len(pd.bdate_range(first, end.date())) - 1)
 
 
+def completed_market_sessions_since_added(raw_data: pd.DataFrame, added_at: str, updated_at: datetime) -> int:
+    """Count completed exchange bars strictly after the tracking date."""
+    try:
+        added = pd.Timestamp(added_at)
+        if added.tzinfo is None:
+            added = added.tz_localize(ISTANBUL_TIMEZONE)
+        else:
+            added = added.tz_convert(ISTANBUL_TIMEZONE)
+    except (TypeError, ValueError):
+        return 0
+    current = pd.Timestamp(updated_at)
+    if current.tzinfo is None:
+        current = current.tz_localize(ISTANBUL_TIMEZONE)
+    else:
+        current = current.tz_convert(ISTANBUL_TIMEZONE)
+    index = pd.DatetimeIndex(raw_data.index)
+    if index.tz is not None:
+        index = index.tz_convert(ISTANBUL_TIMEZONE).tz_localize(None)
+    session_dates = pd.DatetimeIndex(index).normalize().unique()
+    completed_dates = [date for date in session_dates if date.date() > added.date()]
+    current_session_is_incomplete = current.weekday() < 5 and current.hour < 18
+    if current_session_is_incomplete:
+        completed_dates = [date for date in completed_dates if date.date() < current.date()]
+    return len(completed_dates)
+
+
 def create_record(snapshot: dict, source: str, added_at: datetime) -> dict:
     symbol = str(snapshot["symbol"]).upper()
+    critical_start = snapshot.get("critical_window_start")
+    critical_end = snapshot.get("critical_window_end")
+    if source == "Smart Scanner":
+        try:
+            critical_start, critical_end = int(critical_start), int(critical_end)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Smart Scanner Inception kaydı geçerli kritik pencere gerektirir.") from exc
+        if critical_start < 1 or critical_end < critical_start:
+            raise ValueError("Smart Scanner Inception kritik penceresi geçersizdir.")
     return {
         "id": uuid4().hex, "schema_version": SCHEMA_VERSION, "symbol": symbol,
         "source": source, "status": "active", "added_at": added_at.isoformat(),
@@ -30,8 +67,8 @@ def create_record(snapshot: dict, source: str, added_at: datetime) -> dict:
             "stop_loss": float(snapshot["stop_loss"]), "nova_score": int(snapshot.get("nova_score", 0)),
             "confidence": int(snapshot.get("confidence", 0)), "indicators": dict(snapshot.get("indicators", {})),
             "sector": snapshot.get("sector", "Bilinmiyor"), "market_state": snapshot.get("market_state", "Bilinmiyor"),
-            "critical_window_start": snapshot.get("critical_window_start"),
-            "critical_window_end": snapshot.get("critical_window_end"),
+            "critical_window_start": critical_start,
+            "critical_window_end": critical_end,
         },
         "dynamic": {},
     }
@@ -53,8 +90,7 @@ def update_record(record: dict, row: dict, raw_data: pd.DataFrame, updated_at: d
     stop = float(initial["stop_loss"])
     highs = raw_data["High"].dropna().astype(float)
     lows = raw_data["Low"].dropna().astype(float)
-    session_index = pd.DatetimeIndex(raw_data.index).normalize().unique()
-    elapsed = max(0, len(session_index) - 1)
+    elapsed = completed_market_sessions_since_added(raw_data, result["added_at"], updated_at)
     horizon_days = HORIZON_DAYS.get(str(result.get("horizon")), 5)
     high = float(highs.max()) if not highs.empty else price
     low = float(lows.min()) if not lows.empty else price
