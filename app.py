@@ -1109,6 +1109,53 @@ def build_follow_window_badge(
     }
 
 
+def build_dashboard_follow_window_badge(
+    latest: pd.Series,
+    horizon: str,
+    base_score: int,
+    confidence: int,
+    resistance_level: float,
+    elapsed_days: int = 0,
+) -> dict[str, object]:
+    """Feed the shared badge engine with Dashboard's canonical analytics inputs."""
+    canonical_horizon = normalize_follow_window_horizon(horizon)
+    score = horizon_score(base_score, latest, canonical_horizon)
+    expected_return = expected_return_potential(latest, resistance_level, canonical_horizon)
+    sell_probability = sell_signal_probability(latest, score, canonical_horizon)
+    return {
+        **build_follow_window_badge(
+            horizon=canonical_horizon,
+            elapsed_days=elapsed_days,
+            latest=latest,
+            score=score,
+            confidence=confidence,
+            expected_return=expected_return,
+            sell_probability=sell_probability,
+        ),
+        "expected_return": expected_return,
+    }
+
+
+def build_market_data_follow_window_badge(
+    raw_data: pd.DataFrame,
+    horizon: str,
+    elapsed_days: int = 0,
+) -> dict[str, object] | None:
+    """Rebuild Dashboard's canonical badge inputs from one symbol's market data."""
+    if raw_data.empty:
+        return None
+    data = calculate_indicators(raw_data).dropna()
+    if data.empty:
+        return None
+    latest = data.iloc[-1]
+    base_score, _ = calculate_general_score(latest)
+    confidence = nova_confidence_index(latest)
+    _, resistance_level = support_resistance(data)
+    return build_dashboard_follow_window_badge(
+        latest, horizon, base_score, confidence, resistance_level, elapsed_days
+    )
+
+
 def support_resistance(data: pd.DataFrame) -> tuple[float, float]:
     recent_data = data.tail(20)
     return float(recent_data["Low"].min()), float(recent_data["High"].max())
@@ -2404,13 +2451,12 @@ def render_scanner_stock_summary(symbol: str) -> None:
         key=f"scanner_summary_horizon_{symbol}",
     )
     selected_trade_row = trade_table[trade_table["Vade"] == selected_horizon].iloc[0]
-    selected_follow_badge = build_follow_window_badge(
-        horizon=selected_horizon,
-        latest=latest,
-        score=int(selected_trade_row["Nova Skoru"]),
-        confidence=confidence,
-        expected_return=float(selected_trade_row["Beklenen Getiri %"]),
-        sell_probability=int(selected_trade_row["Sat Sinyali Yakma Riski %"]),
+    selected_follow_badge = build_dashboard_follow_window_badge(
+        latest,
+        selected_horizon,
+        score,
+        confidence,
+        resistance_level,
     )
     render_pro_follow_window_detail(selected_horizon, selected_trade_row, selected_follow_badge, force=True)
     st.button(
@@ -2431,31 +2477,6 @@ def scanner_horizon_to_watch_horizon(scanner_horizon: str) -> str:
     if scanner_horizon in {"1-2 ay", "2-4 ay"}:
         return "Orta vade"
     return "Uzun vade"
-
-
-def smart_scanner_follow_badge(scan_row: dict, horizon: str) -> dict[str, object] | None:
-    """Adapt a scanner row to the shared Dashboard/Inception badge engine."""
-    latest = pd.Series(
-        {
-            "VOLATILITY20": scan_row.get("Volatilite"),
-            "ADX14": scan_row.get("_follow_adx14"),
-            "MOMENTUM10": scan_row.get("_follow_momentum10"),
-            "EMA20": scan_row.get("_follow_ema20"),
-            "EMA50": scan_row.get("_follow_ema50"),
-            "Close": scan_row.get("_follow_close", scan_row.get("Son Fiyat", 0)),
-        }
-    )
-    try:
-        return build_follow_window_badge(
-            horizon=horizon,
-            latest=latest,
-            score=int(scan_row["Nova Score"]),
-            confidence=int(scan_row["AI Güven Endeksi"]),
-            expected_return=float(scan_row["Beklenen Getiri %"]),
-            sell_probability=int(scan_row["Sat Riski %"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
 
 
 def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
@@ -2483,14 +2504,12 @@ def render_scanner_watchlist_add(symbols: list[str], horizon: str) -> None:
             skipped_symbols.append(symbol)
             continue
         scan_row = matching.iloc[0].to_dict()
-        follow_badge = smart_scanner_follow_badge(scan_row, horizon)
-        if follow_badge is None:
-            try:
-                raw = nova_scanner.download_price_data(symbol, f"inception-add-{now_istanbul().isoformat()}")
-                refreshed_row = nova_scanner._scan_row(symbol, symbol, raw, normalize_follow_window_horizon(horizon))
-                follow_badge = smart_scanner_follow_badge(refreshed_row or {}, horizon)
-            except Exception as exc:
-                logger.warning("Smart Scanner Inception add preserved | SYMBOL=%s error=%s", symbol, exc)
+        try:
+            raw = nova_scanner.download_price_data(symbol, f"inception-add-{now_istanbul().isoformat()}")
+            follow_badge = build_market_data_follow_window_badge(raw, horizon)
+        except Exception as exc:
+            follow_badge = None
+            logger.warning("Smart Scanner Inception add preserved | SYMBOL=%s error=%s", symbol, exc)
         if follow_badge is None:
             invalid_window_symbols.append(symbol)
             continue
@@ -3258,13 +3277,12 @@ def render_dashboard_page() -> None:
     selected_score = int(selected_trade_row["Nova Skoru"])
     selected_expected_return = float(selected_trade_row["Beklenen Getiri %"])
     selected_sell_probability = int(selected_trade_row["Sat Sinyali Yakma Riski %"])
-    selected_follow_badge = build_follow_window_badge(
-        horizon=selected_horizon,
-        latest=latest,
-        score=selected_score,
-        confidence=confidence,
-        expected_return=selected_expected_return,
-        sell_probability=selected_sell_probability,
+    selected_follow_badge = build_dashboard_follow_window_badge(
+        latest,
+        selected_horizon,
+        general_score,
+        confidence,
+        resistance_level,
     )
     first_target, second_target, stop_loss, risk_reward = target_stop_levels(
         latest,
@@ -4670,7 +4688,9 @@ def update_inception_records(active: list[dict], now: datetime, downloader=nova_
                 return active, False, None
             record_for_update = record
             if record.get("source") == "Smart Scanner":
-                corrected_badge = smart_scanner_follow_badge(row, str(record.get("horizon", "Günlük işlem")))
+                corrected_badge = build_market_data_follow_window_badge(
+                    raw, str(record.get("horizon", "Günlük işlem"))
+                )
                 if corrected_badge is None:
                     logger.warning("Inception critical migration skipped | SYMBOL=%s reason=analysis_data_unavailable", record.get("symbol"))
                 else:

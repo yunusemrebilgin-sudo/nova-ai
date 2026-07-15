@@ -187,10 +187,11 @@ class InceptionTests(unittest.TestCase):
         self.assertNotIn("Inception’a Hisse Ekle", source)
         self.assertNotIn("smart_scanner_row_add_", source)
 
-    def test_scanner_batch_add_reuses_complete_results_before_safe_refresh(self):
+    def test_scanner_add_uses_canonical_market_data_badge_without_changing_visible_expectation(self):
         source = inspect.getsource(app.render_scanner_watchlist_add)
         self.assertIn('st.session_state.get("smart_scanner_results"', source)
-        self.assertLess(source.index("smart_scanner_follow_badge(scan_row"), source.index("download_price_data"))
+        self.assertIn("build_market_data_follow_window_badge(raw, horizon)", source)
+        self.assertIn('expected = float(scan_row["Beklenen Getiri %"])', source)
         self.assertEqual(source.count("save_current_user_pro_data()"), 1)
 
     def test_scanner_coarse_horizon_normalizes_to_dashboard_horizon(self):
@@ -230,15 +231,30 @@ class InceptionTests(unittest.TestCase):
             self.assertEqual(app.expected_holding_period(latest, "Günlük işlem"), "1-5 işlem günü")
         calculator.assert_called_once_with(latest, "Günlük işlem")
 
-    def test_scanner_missing_holding_period_uses_shared_calculator(self):
-        row = {"Volatilite": 2.0, "Nova Score": 70, "AI Güven Endeksi": 70, "Beklenen Getiri %": 6, "Sat Riski %": 40,
-               "_follow_momentum10": 0, "_follow_ema20": 100, "_follow_ema50": 99, "_follow_close": 101, "_follow_adx14": 20}
-        with patch("app.follow_window_visual", return_value=(40, 20)):
-            badge = app.smart_scanner_follow_badge(row, "1-5 gün")
-        self.assertEqual((badge["critical_window_start"], badge["critical_window_end"]), (3, 3))
+    def test_dashboard_and_inception_use_identical_canonical_expected_return_and_badge(self):
+        latest = pd.Series({"Close": 100, "EMA20": 99, "EMA50": 98, "ATR_PCT": 2, "VOLATILITY20": 2,
+                            "MOMENTUM10": 0, "ADX14": 20})
+        prepared = pd.DataFrame([latest])
+        patches = (
+            patch("app.calculate_indicators", return_value=prepared),
+            patch("app.calculate_general_score", return_value=(70, [])),
+            patch("app.nova_confidence_index", return_value=75),
+            patch("app.support_resistance", return_value=(90, 110)),
+            patch("app.horizon_score", return_value=72),
+            patch("app.sell_signal_probability", return_value=35),
+            patch("app.follow_window_visual", return_value=(36, 13)),
+        )
+        for active_patch in patches: active_patch.start()
+        try:
+            dashboard = app.build_dashboard_follow_window_badge(latest, "Günlük işlem", 70, 75, 110)
+            inception_badge = app.build_market_data_follow_window_badge(pd.DataFrame({"Close": [100]}), "1-5 gün")
+        finally:
+            for active_patch in reversed(patches): active_patch.stop()
+        for field in ("expected_return", "critical_window_start", "critical_window_end", "badge_text"):
+            self.assertEqual(dashboard[field], inception_badge[field], field)
 
     def test_scanner_add_is_blocked_when_window_cannot_be_resolved(self):
-        self.assertIsNone(app.smart_scanner_follow_badge({}, "Günlük işlem"))
+        self.assertIsNone(app.build_market_data_follow_window_badge(pd.DataFrame(), "Günlük işlem"))
         source = inspect.getsource(app.render_scanner_watchlist_add)
         self.assertLess(source.index("if follow_badge is None"), source.index("nova_inception.add_record"))
         self.assertIn("Inception kaydı oluşturulmadı", source)
@@ -255,7 +271,9 @@ class InceptionTests(unittest.TestCase):
         row = {**scan_row(), "Volatilite": 2.0, "Sat Riski %": 40,
                "_follow_momentum10": 0, "_follow_ema20": 100, "_follow_ema50": 99,
                "_follow_close": 101, "_follow_adx14": 20}
-        with patch("app.nova_scanner._scan_row", return_value=row), patch("app.follow_window_visual", return_value=(36, 13)):
+        corrected = {"expected_holding_period": "1-5 işlem günü", "critical_window_start": 2,
+                     "critical_window_end": 3, "days_to_critical": 2, "badge_text": "2-3. işlem günü"}
+        with patch("app.nova_scanner._scan_row", return_value=row), patch("app.build_market_data_follow_window_badge", return_value=corrected):
             updated, success, _ = app.update_inception_records([record], NOW.replace(hour=19), Mock(return_value=frame()))
         self.assertTrue(success)
         self.assertEqual((updated[0]["initial"]["critical_window_start"], updated[0]["initial"]["critical_window_end"]), (2, 3))
