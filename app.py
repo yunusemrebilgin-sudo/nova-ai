@@ -299,6 +299,8 @@ def init_access_state() -> None:
         st.session_state.inception_metadata = []
     if "yeb_pro_module" not in st.session_state:
         st.session_state.yeb_pro_module = DEFAULT_PRO_MODULE
+    if complete_pending_logout():
+        return
     restore_persistent_session()
 
 
@@ -333,7 +335,7 @@ def validate_auth_session_token(token: str) -> dict[str, object] | None:
 
 
 def restore_persistent_session() -> None:
-    if st.session_state.get("is_authenticated"):
+    if st.session_state.get("is_authenticated") or st.session_state.get("logout_in_progress"):
         return
     token = str(COOKIE_MANAGER.get(AUTH_COOKIE_NAME) or "").strip()
     restored = validate_auth_session_token(token) if token else None
@@ -434,7 +436,7 @@ def save_current_user_pro_data() -> None:
     st.session_state.yeb_data_user = username
 
 
-def logout_current_user() -> None:
+def clear_authenticated_session_state() -> None:
     st.session_state.is_authenticated = False
     st.session_state.auth_user = ""
     st.session_state.yeb_pro_active = False
@@ -460,13 +462,51 @@ def logout_current_user() -> None:
     ):
         st.session_state.pop(key, None)
     st.session_state.selected_page = SMART_SCANNER_PAGE
+
+
+def delete_auth_cookie(request_id: int, attempt: int) -> None:
     try:
-        COOKIE_MANAGER.delete(AUTH_COOKIE_NAME)
+        COOKIE_MANAGER.delete(
+            AUTH_COOKIE_NAME,
+            key=f"logout_cookie_{request_id}_{attempt}",
+        )
     except KeyError:
         # CookieManager emits the browser delete before removing its cached copy.
-        # A stale/missing cached key must not prevent the logout rerun.
+        # Its local cache may not contain a cookie that still exists in the browser.
         pass
+
+
+def complete_pending_logout() -> bool:
+    if not st.session_state.get("logout_in_progress"):
+        return False
+
+    request_id = int(st.session_state.get("logout_request_id", 0))
+    if COOKIE_MANAGER.get(AUTH_COOKIE_NAME):
+        attempt = int(st.session_state.get("logout_delete_attempt", 1)) + 1
+        st.session_state.logout_delete_attempt = attempt
+        delete_auth_cookie(request_id, attempt)
+        clear_authenticated_session_state()
+        st.stop()
+        return True
+
+    clear_authenticated_session_state()
+    st.session_state.pop("logout_in_progress", None)
+    st.session_state.pop("logout_delete_attempt", None)
     st.rerun()
+    return True
+
+
+def logout_current_user() -> None:
+    request_id = int(st.session_state.get("logout_request_id", 0)) + 1
+    st.session_state.logout_request_id = request_id
+    st.session_state.logout_in_progress = True
+    st.session_state.logout_delete_attempt = 1
+    delete_auth_cookie(request_id, 1)
+    clear_authenticated_session_state()
+    # CookieManager deletes in its browser iframe and triggers the next run when
+    # that client-side operation completes. An immediate st.rerun() here races
+    # the iframe and can restore the still-present cookie.
+    st.stop()
 
 
 @st.cache_data(show_spinner=False)
@@ -4116,6 +4156,8 @@ def render_login_page() -> bool:
         if known_user and password_value == known_user["password"]:
             user = {"username": normalized_username, "is_pro": bool(known_user.get("is_pro", False))}
     if user:
+        st.session_state.pop("logout_in_progress", None)
+        st.session_state.pop("logout_delete_attempt", None)
         st.session_state.is_authenticated = True
         st.session_state.auth_user = user["username"]
         st.session_state.yeb_pro_active = bool(user["is_pro"])

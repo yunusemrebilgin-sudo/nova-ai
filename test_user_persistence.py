@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from types import MappingProxyType
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import app
 import user_store
@@ -16,6 +16,11 @@ class FakeResponse:
 
     def json(self):
         return copy.deepcopy(self.payload)
+
+
+class SessionState(dict):
+    __getattr__ = dict.__getitem__
+    __setattr__ = dict.__setitem__
 
 
 class SupabasePortfolioBackend:
@@ -63,11 +68,7 @@ class UserPersistenceTests(unittest.TestCase):
         user_store.configure_users(users)
         self.assertIsNotNone(user_store.authenticate("kullanici1", "runtime-secret"))
 
-    def test_logout_clears_user_session_deletes_cookie_and_reruns(self):
-        class SessionState(dict):
-            __getattr__ = dict.__getitem__
-            __setattr__ = dict.__setitem__
-
+    def logout_state(self, **overrides):
         state = SessionState(
             is_authenticated=True,
             auth_user="user1",
@@ -92,15 +93,22 @@ class UserPersistenceTests(unittest.TestCase):
             portfolio_results_cache_key="user1-cache",
             selected_page=app.PUBLIC_DASHBOARD_PAGE,
         )
+        state.update(overrides)
+        return state
+
+    def test_logout_with_cookie_starts_client_delete_without_immediate_rerun(self):
+        state = self.logout_state()
         with (
             patch.object(app.st, "session_state", state),
             patch.object(app, "COOKIE_MANAGER") as cookie_manager,
             patch.object(app.st, "rerun") as rerun,
+            patch.object(app.st, "stop") as stop,
             patch.object(user_store, "save_user_portfolio_data") as save_data,
         ):
-            cookie_manager.delete.side_effect = KeyError(app.AUTH_COOKIE_NAME)
             app.logout_current_user()
 
+        self.assertTrue(state["logout_in_progress"])
+        self.assertEqual(state["logout_request_id"], 1)
         self.assertFalse(state["is_authenticated"])
         self.assertEqual(state["auth_user"], "")
         self.assertFalse(state["yeb_pro_active"])
@@ -113,9 +121,105 @@ class UserPersistenceTests(unittest.TestCase):
         for key in ("login_username", "login_password", "inception_storage_ready", "inception_storage_mode", "inception_visit_id", "inception_last_attempt_visit", "portfolio_ranked_results", "portfolio_results_cache_key"):
             self.assertNotIn(key, state)
         self.assertEqual(state["selected_page"], app.SMART_SCANNER_PAGE)
-        cookie_manager.delete.assert_called_once_with(app.AUTH_COOKIE_NAME)
-        rerun.assert_called_once_with()
+        cookie_manager.delete.assert_called_once_with(app.AUTH_COOKIE_NAME, key="logout_cookie_1_1")
+        stop.assert_called_once_with()
+        rerun.assert_not_called()
         save_data.assert_not_called()
+
+    def test_logout_without_cached_cookie_still_emits_browser_delete(self):
+        state = self.logout_state()
+        with (
+            patch.object(app.st, "session_state", state),
+            patch.object(app, "COOKIE_MANAGER") as cookie_manager,
+            patch.object(app.st, "stop") as stop,
+        ):
+            cookie_manager.delete.side_effect = KeyError(app.AUTH_COOKIE_NAME)
+            app.logout_current_user()
+
+        cookie_manager.delete.assert_called_once_with(app.AUTH_COOKIE_NAME, key="logout_cookie_1_1")
+        self.assertTrue(state["logout_in_progress"])
+        stop.assert_called_once_with()
+
+    def test_logout_component_rerun_finishes_cleanup_and_reruns_app(self):
+        state = self.logout_state(
+            is_authenticated=False,
+            auth_user="",
+            logout_in_progress=True,
+            logout_request_id=3,
+            logout_delete_attempt=1,
+        )
+        with (
+            patch.object(app.st, "session_state", state),
+            patch.object(app, "COOKIE_MANAGER") as cookie_manager,
+            patch.object(app.st, "rerun") as rerun,
+        ):
+            cookie_manager.get.return_value = None
+            self.assertTrue(app.complete_pending_logout())
+
+        self.assertNotIn("logout_in_progress", state)
+        self.assertNotIn("logout_delete_attempt", state)
+        self.assertEqual(state["selected_page"], app.SMART_SCANNER_PAGE)
+        rerun.assert_called_once_with()
+
+    def test_refresh_cannot_restore_old_cookie_while_logout_is_pending(self):
+        state = self.logout_state(
+            is_authenticated=False,
+            auth_user="",
+            logout_in_progress=True,
+            logout_request_id=4,
+            logout_delete_attempt=1,
+        )
+        with (
+            patch.object(app.st, "session_state", state),
+            patch.object(app, "COOKIE_MANAGER") as cookie_manager,
+            patch.object(app, "validate_auth_session_token") as validate_token,
+            patch.object(app.st, "stop") as stop,
+        ):
+            cookie_manager.get.return_value = "old-valid-cookie"
+            app.restore_persistent_session()
+            self.assertTrue(app.complete_pending_logout())
+
+        validate_token.assert_not_called()
+        cookie_manager.delete.assert_called_once_with(app.AUTH_COOKIE_NAME, key="logout_cookie_4_2")
+        self.assertFalse(state["is_authenticated"])
+        self.assertEqual(state["auth_user"], "")
+        self.assertTrue(state["logout_in_progress"])
+        stop.assert_called_once_with()
+
+    def test_different_user_can_login_after_completed_logout(self):
+        user_store.configure_users(
+            {
+                "user1": {"password": "first-secret", "is_pro": True},
+                "kullanici1": {"password": "second-secret", "is_pro": False},
+            }
+        )
+        state = self.logout_state(
+            is_authenticated=False,
+            auth_user="",
+            login_username="kullanici1",
+            login_password="second-secret",
+        )
+        state.pop("logout_in_progress", None)
+        form_context = MagicMock()
+        with (
+            patch.object(app.st, "session_state", state),
+            patch.object(app.st, "title"),
+            patch.object(app.st, "markdown"),
+            patch.object(app.st, "form", return_value=form_context),
+            patch.object(app.st, "text_input", side_effect=["kullanici1", "second-secret"]),
+            patch.object(app.st, "form_submit_button", return_value=True),
+            patch.object(app, "COOKIE_MANAGER") as cookie_manager,
+            patch.object(app, "load_current_user_pro_data"),
+            patch.object(app.st, "success"),
+            patch.object(app.st, "rerun"),
+        ):
+            self.assertTrue(app.render_login_page())
+
+        self.assertTrue(state["is_authenticated"])
+        self.assertEqual(state["auth_user"], "kullanici1")
+        self.assertFalse(state["yeb_pro_active"])
+        cookie_manager.set.assert_called_once()
+        self.assertEqual(cookie_manager.set.call_args.args[0], app.AUTH_COOKIE_NAME)
 
     def test_inception_compat_storage_preserves_watchlist_and_round_trips(self):
         snapshot = {
