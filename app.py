@@ -23,11 +23,15 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import analytics as nova_analytics
+import critical_day_v2 as yebora_critical_day_v2
 import decision_center as nova_decision
+import entry_timing as yebora_entry_timing
+import expected_return_v2 as yebora_expected_return_v2
 import portfolio as nova_portfolio
 import scanner as nova_scanner
 import inception as nova_inception
 import user_store
+import validation_engine as yebora_validation
 from theme import apply_terminal_theme, init_theme_state, set_theme_from_toggle, theme_tokens
 
 logger = logging.getLogger(__name__)
@@ -3183,7 +3187,493 @@ def render_smart_scanner_page() -> None:
     render_scanner_disclosure()
 
 
+def render_entry_timing_lab() -> dict[str, object] | None:
+    scanner_table = normalize_smart_scanner_table(
+        st.session_state.get("smart_scanner_results", pd.DataFrame())
+    )
+    if scanner_table.empty:
+        st.info("Entry Timing Engine için önce Smart Scanner çalıştırılmalıdır.")
+        return None
+
+    symbols = scanner_table["Hisse"].dropna().astype(str).drop_duplicates().tolist()
+    selected_symbol = st.selectbox(
+        "Değerlendirilecek hisse",
+        [""] + symbols,
+        format_func=lambda symbol: symbol or "Bir hisse seçin",
+        key="yebora_lab_entry_symbol",
+    )
+    if not selected_symbol:
+        st.caption("Deneysel değerlendirme için Smart Scanner sonuçlarından bir hisse seçin.")
+        return None
+
+    row = scanner_table.loc[scanner_table["Hisse"].astype(str) == selected_symbol].iloc[0].to_dict()
+    result = yebora_entry_timing.evaluate_entry_timing(row)
+    result = {**result, "symbol": selected_symbol}
+    score_col, decision_col, time_col = st.columns(3)
+    score_col.metric("Entry Timing Score", f"{result['score']}/100")
+    decision_col.metric("Karar sınıfı", str(result["classification"]))
+    time_col.metric("Kullanılan veri zamanı", timestamp_display_label(row.get("_market_data_time")))
+
+    positive_col, negative_col = st.columns(2)
+    with positive_col:
+        st.markdown("#### Pozitif katkılar")
+        positive = result["positive_contributions"]
+        if positive:
+            for item in positive:
+                st.markdown(f"- {item['label']}: **+{item['points']}**")
+        else:
+            st.caption("Pozitif katkı oluşmadı.")
+    with negative_col:
+        st.markdown("#### Negatif katkılar")
+        negative = result["negative_contributions"]
+        if negative:
+            for item in negative:
+                st.markdown(f"- {item['label']}: **{item['points']}**")
+        else:
+            st.caption("Negatif katkı oluşmadı.")
+
+    st.markdown("#### Kritik uyarılar")
+    warnings = result["warnings"]
+    if warnings:
+        for warning in warnings:
+            st.warning(warning)
+    else:
+        st.success("Kritik uyarı oluşmadı.")
+    missing = result["missing_data"]
+    st.markdown("#### Veri eksikleri")
+    st.info(", ".join(missing) if missing else "Eksik veri yok.")
+    st.caption("Deneysel karar destek çıktısıdır; mevcut sistem kararlarını ve sıralamalarını etkilemez.")
+    return result
+
+
+def _lab_percent(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"%{number:.2f}" if math.isfinite(number) else "—"
+
+
+def _render_lab_contributions(title: str, items: list[dict[str, object]]) -> None:
+    st.markdown(f"#### {title}")
+    if not items:
+        st.caption("Katkı oluşmadı.")
+        return
+    for item in items:
+        points = float(item["points"])
+        sign = "+" if points > 0 else ""
+        st.markdown(f"- {item['label']}: **{sign}{points:g} {item['unit']}**")
+
+
+def render_expected_return_v2_lab() -> dict[str, object] | None:
+    scanner_table = normalize_smart_scanner_table(
+        st.session_state.get("smart_scanner_results", pd.DataFrame())
+    )
+    if scanner_table.empty:
+        st.info("Expected Return Engine 2.0 için önce Smart Scanner çalıştırılmalıdır.")
+        return None
+
+    symbols = scanner_table["Hisse"].dropna().astype(str).drop_duplicates().tolist()
+    selected_symbol = st.selectbox(
+        "Değerlendirilecek hisse",
+        [""] + symbols,
+        format_func=lambda symbol: symbol or "Bir hisse seçin",
+        key="yebora_lab_expected_return_symbol",
+    )
+    if not selected_symbol:
+        st.caption("Deneysel Expected Return V2 değerlendirmesi için bir hisse seçin.")
+        return None
+
+    row = scanner_table.loc[scanner_table["Hisse"].astype(str) == selected_symbol].iloc[0].to_dict()
+    selected_horizon = str(
+        st.session_state.get("smart_scanner_selected_horizon")
+        or st.session_state.get("smart_scan_horizon")
+        or "1-5 gün"
+    )
+    result = yebora_expected_return_v2.evaluate_expected_return_v2(row, selected_horizon)
+    result = {**result, "symbol": selected_symbol}
+
+    top_row = st.columns(3)
+    top_row[0].metric("Mevcut Expected Return", _lab_percent(result["features"].get("current_expected_return")))
+    top_row[1].metric("V2 Muhafazakâr Beklenti", _lab_percent(result["conservative_expected_return"]))
+    top_row[2].metric("V2 Ana Beklenti", _lab_percent(result["main_expected_return"]))
+    second_row = st.columns(3)
+    second_row[0].metric("V2 İyimser Beklenti", _lab_percent(result["optimistic_expected_return"]))
+    second_row[1].metric(
+        "Model Güveni",
+        f"%{result['model_confidence']:.0f}",
+        str(result["model_confidence_classification"]),
+    )
+    second_row[2].metric(
+        "Kullanılan veri zamanı",
+        timestamp_display_label(result["features"].get("market_data_time")),
+    )
+    st.caption(
+        "Seçili vade eşlemesi: "
+        f"{result['features']['horizon_mapping']['canonical']} "
+        f"(×{result['features']['horizon_mapping']['multiplier']:.2f})"
+    )
+
+    component_row = st.columns(3)
+    component_row[0].metric("Hareket kapasitesi", _lab_percent(result["movement_capacity"]))
+    component_row[1].metric("Directional Quality Score", f"{result['directional_quality_score']:.0f}/100")
+    component_row[2].metric("Entry Timing etkisi", f"{result['entry_timing_adjustment']:+.2f} puan")
+    component_row_2 = st.columns(3)
+    component_row_2[0].metric("Direnç etkisi", f"{result['resistance_adjustment']:+.2f} puan")
+    component_row_2[1].metric("Risk cezası", f"-{result['risk_penalty']:.2f} puan")
+    component_row_2[2].metric("Belirsizlik payı", f"±{result['uncertainty']:.2f} puan")
+
+    contribution_columns = st.columns(2)
+    with contribution_columns[0]:
+        _render_lab_contributions("Pozitif katkılar", result["positive_contributions"])
+    with contribution_columns[1]:
+        _render_lab_contributions("Negatif katkılar", result["negative_contributions"])
+
+    st.markdown("#### Sınırlayıcı faktörler")
+    if result["limiting_factors"]:
+        for factor in result["limiting_factors"]:
+            st.markdown(f"- {factor}")
+    else:
+        st.caption("Sınırlayıcı faktör oluşmadı.")
+
+    for warning in result["warnings"]:
+        st.warning(warning)
+    st.markdown("#### Eksik veriler")
+    st.info(", ".join(result["missing_data"]) if result["missing_data"] else "Eksik veri yok.")
+    st.caption("V2 sonuçları yalnızca deneysel karşılaştırmadır; mevcut beklenen getiri hesabını etkilemez.")
+    return result
+
+
+def _lab_trading_day(value: object) -> str:
+    try:
+        day = int(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{day}. işlem günü"
+
+
+def _lab_trading_window(start: object, end: object) -> str:
+    try:
+        return f"{int(start)}-{int(end)}. işlem günü"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def render_critical_day_v2_lab(
+    entry_result: dict[str, object] | None,
+    expected_result: dict[str, object] | None,
+) -> dict[str, object] | None:
+    scanner_table = normalize_smart_scanner_table(
+        st.session_state.get("smart_scanner_results", pd.DataFrame())
+    )
+    if scanner_table.empty:
+        st.info("Critical Day Engine 2.0 için önce Smart Scanner çalıştırılmalıdır.")
+        return None
+
+    symbols = scanner_table["Hisse"].dropna().astype(str).drop_duplicates().tolist()
+    selected_symbol = st.selectbox(
+        "Değerlendirilecek hisse",
+        [""] + symbols,
+        format_func=lambda symbol: symbol or "Bir hisse seçin",
+        key="yebora_lab_critical_day_symbol",
+    )
+    if not selected_symbol:
+        st.caption("Deneysel Critical Day V2 değerlendirmesi için bir hisse seçin.")
+        return None
+
+    row = scanner_table.loc[scanner_table["Hisse"].astype(str) == selected_symbol].iloc[0].to_dict()
+    selected_horizon = str(
+        st.session_state.get("smart_scanner_selected_horizon")
+        or st.session_state.get("smart_scan_horizon")
+        or "1-5 gün"
+    )
+    matching_entry = entry_result if entry_result and entry_result.get("symbol") == selected_symbol else None
+    matching_expected = expected_result if expected_result and expected_result.get("symbol") == selected_symbol else None
+    result = yebora_critical_day_v2.evaluate_critical_day_v2(
+        row,
+        selected_horizon,
+        entry_timing_result=matching_entry,
+        expected_return_result=matching_expected,
+    )
+    result = {**result, "symbol": selected_symbol}
+
+    top_row = st.columns(4)
+    top_row[0].metric("Mevcut Kritik Gün / Pencere", str(result["features"].get("current_critical_window") or "—"))
+    top_row[1].metric("V2 En Erken Makul Gün", _lab_trading_day(result["earliest_reasonable_day"]))
+    top_row[2].metric(
+        "V2 Ana Gerçekleşme Penceresi",
+        _lab_trading_window(result["window_start"], result["window_end"]),
+    )
+    top_row[3].metric("V2 Ana Gün", _lab_trading_day(result["main_day"]))
+    second_row = st.columns(4)
+    second_row[0].metric("V2 Geç Kalma / Bozulma Sınırı", _lab_trading_day(result["late_day"]))
+    reachability_label = (
+        "Erişilebilir" if result["reachability"] is True
+        else "Erişilemez" if result["reachability"] is False
+        else "Sayısal sonuç yok"
+    )
+    second_row[1].metric("Reachability", reachability_label)
+    second_row[2].metric(
+        "Critical Day Model Confidence",
+        f"%{result['critical_day_model_confidence']:.0f}",
+        str(result["critical_day_confidence_classification"]),
+    )
+    second_row[3].metric(
+        "Kullanılan veri zamanı",
+        timestamp_display_label(result["features"].get("market_data_time")),
+    )
+
+    horizon = result["features"]["critical_day_horizon"]
+    st.caption(
+        f"Seçilen vade: {horizon['canonical']} · İşlem günü sınırları: "
+        f"{horizon['minimum_trading_day']}-{horizon['maximum_trading_day']}"
+    )
+    component_row = st.columns(4)
+    component_row[0].metric("Expected Return V2 Ana Beklenti", _lab_percent(result["features"].get("main_expected_return")))
+    component_row[1].metric("Daily Directional Capacity", _lab_percent(result["daily_directional_capacity"]))
+    component_row[2].metric("Base Reach Day", _lab_trading_day(result["base_reach_day"]))
+    component_row[3].metric("Adjusted Reach Day", _lab_trading_day(result["adjusted_reach_day"]))
+    detail_row = st.columns(2)
+    detail_row[0].metric(
+        "Pencere yarı genişliği",
+        "—" if result["window_half_width"] is None else f"±{result['window_half_width']} işlem günü",
+    )
+    detail_row[1].metric(
+        "Risk Extension",
+        "—" if result["risk_extension_days"] is None else f"+{result['risk_extension_days']} işlem günü",
+    )
+
+    adjustment_columns = st.columns(2)
+    with adjustment_columns[0]:
+        st.markdown("#### Hızlandırıcılar")
+        if result["accelerators"]:
+            for item in result["accelerators"]:
+                st.markdown(f"- {item['label']}: **{item['days']} gün**")
+        else:
+            st.caption("Hızlandırıcı oluşmadı.")
+    with adjustment_columns[1]:
+        st.markdown("#### Yavaşlatıcılar")
+        if result["delays"]:
+            for item in result["delays"]:
+                st.markdown(f"- {item['label']}: **+{item['days']} gün**")
+        else:
+            st.caption("Yavaşlatıcı oluşmadı.")
+
+    st.markdown("#### Sınırlayıcı faktörler")
+    if result["limiting_factors"]:
+        for factor in result["limiting_factors"]:
+            st.markdown(f"- {factor}")
+    else:
+        st.caption("Sınırlayıcı faktör oluşmadı.")
+    for warning in result["warnings"]:
+        st.warning(warning)
+    st.markdown("#### Eksik veriler")
+    st.info(", ".join(result["missing_data"]) if result["missing_data"] else "Eksik veri yok.")
+    if result["late_day"] is not None:
+        st.caption("Bu işlem gününden sonra mevcut teknik senaryonun geçerliliği belirgin biçimde zayıflar.")
+    st.caption("Deneysel işlem günü penceresidir; mevcut kritik gün motorunu ve Inception kayıtlarını etkilemez.")
+    return result
+
+
+def render_validation_lab() -> dict[str, object] | None:
+    scanner_table = normalize_smart_scanner_table(
+        st.session_state.get("smart_scanner_results", pd.DataFrame())
+    )
+    if scanner_table.empty:
+        st.info("Validation / Compare Engine için önce Smart Scanner çalıştırılmalıdır.")
+        return None
+
+    symbols = scanner_table["Hisse"].dropna().astype(str).drop_duplicates().tolist()
+    selected_symbol = st.selectbox(
+        "Karşılaştırılacak hisse",
+        [""] + symbols,
+        format_func=lambda symbol: symbol or "Bir hisse seçin",
+        key="yebora_lab_validation_symbol",
+    )
+    if not selected_symbol:
+        st.caption("Mevcut sistem ve LAB motorlarını karşılaştırmak için bir hisse seçin.")
+        return None
+
+    row = scanner_table.loc[scanner_table["Hisse"].astype(str) == selected_symbol].iloc[0].to_dict()
+    selected_horizon = str(
+        st.session_state.get("smart_scanner_selected_horizon")
+        or st.session_state.get("smart_scan_horizon")
+        or "1-5 gün"
+    )
+    result = yebora_validation.evaluate_validation_engine(row, selected_horizon)
+    features = result["features"]
+    comparison = result["comparison"]
+
+    top_row = st.columns(3)
+    top_row[0].metric("Sembol", str(result["symbol"] or selected_symbol))
+    top_row[1].metric("Model Tutarlılık Skoru", f"{result['model_consistency_score']}/100")
+    top_row[2].metric("Tutarlılık sınıfı", str(result["model_consistency_classification"]))
+    summary_row = st.columns(2)
+    summary_row[0].metric("Ortak Karar Özeti", str(result["summary"]["decision"]))
+    summary_row[1].metric("Kullanılan veri zamanı", timestamp_display_label(features.get("market_data_time")))
+    st.info(str(result["summary"]["reason"]))
+
+    difference = comparison.get("expected_return_difference")
+    current_window = comparison.get("current_window") or {}
+    v2_window = comparison.get("v2_window") or {}
+    comparison_rows = [
+        {
+            "Karşılaştırma": "Beklenen Getiri",
+            "Mevcut Sistem": _lab_percent(features.get("current_expected_return")),
+            "LAB Sonucu": _lab_percent(features.get("v2_main_expected_return")),
+            "Fark / Durum": f"{_lab_percent(difference)} · {comparison.get('expected_return_difference_class') or '—'}",
+        },
+        {
+            "Karşılaştırma": "Getiri Güveni",
+            "Mevcut Sistem": _lab_percent(features.get("current_confidence")),
+            "LAB Sonucu": _lab_percent(features.get("v2_model_confidence")),
+            "Fark / Durum": "Expected Return V2 Model Güveni",
+        },
+        {
+            "Karşılaştırma": "Giriş Zamanlaması",
+            "Mevcut Sistem": str(features.get("current_signal") or "—"),
+            "LAB Sonucu": (
+                "—" if features.get("entry_timing_score") is None
+                else f"{float(features['entry_timing_score']):.0f}/100 · {features.get('entry_timing_classification')}"
+            ),
+            "Fark / Durum": "Mevcut sinyal / Entry Timing V1.1",
+        },
+        {
+            "Karşılaştırma": "Kritik Pencere",
+            "Mevcut Sistem": str(features.get("current_holding_period") or "—"),
+            "LAB Sonucu": _lab_trading_window(v2_window.get("start"), v2_window.get("end")),
+            "Fark / Durum": (
+                "Çakışıyor" if comparison.get("window_overlap") is True
+                else "Çakışmıyor" if comparison.get("window_overlap") is False
+                else "Karşılaştırılamadı"
+            ),
+        },
+        {
+            "Karşılaştırma": "Vade İçi Erişilebilirlik",
+            "Mevcut Sistem": "Ayrı reachability sonucu yok",
+            "LAB Sonucu": (
+                "Erişilebilir" if features.get("critical_reachability") is True
+                else "Erişilemez" if features.get("critical_reachability") is False
+                else "Sayısal sonuç yok"
+            ),
+            "Fark / Durum": str(features.get("critical_status") or "—"),
+        },
+        {
+            "Karşılaştırma": "Nova Score / Directional Quality",
+            "Mevcut Sistem": "—" if features.get("current_nova_score") is None else f"{float(features['current_nova_score']):.0f}/100",
+            "LAB Sonucu": "—" if features.get("directional_quality_score") is None else f"{float(features['directional_quality_score']):.0f}/100",
+            "Fark / Durum": "Kalite göstergeleri",
+        },
+        {
+            "Karşılaştırma": "Mevcut Risk / V2 Risk Cezası",
+            "Mevcut Sistem": _lab_percent(features.get("current_risk")),
+            "LAB Sonucu": "—" if features.get("v2_risk_penalty") is None else f"-{float(features['v2_risk_penalty']):.2f} puan",
+            "Fark / Durum": "Farklı ölçekler",
+        },
+        {
+            "Karşılaştırma": "Mevcut Sinyal / LAB Ortak Özeti",
+            "Mevcut Sistem": str(features.get("current_signal") or "—"),
+            "LAB Sonucu": str(result["summary"]["decision"]),
+            "Fark / Durum": str(result["model_consistency_classification"]),
+        },
+    ]
+    st.markdown("#### Ana karşılaştırma")
+    st.dataframe(pd.DataFrame(comparison_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("#### Model çelişkileri")
+    if not result["conflicts"]:
+        st.success("Tanımlı kurallarda model çelişkisi tespit edilmedi.")
+    for conflict in result["conflicts"]:
+        message = (
+            f"**{conflict['severity']} · {conflict['title']}**  \n"
+            f"{conflict['description']}  \n"
+            f"Mevcut: `{conflict['current_value']}` · LAB: `{conflict['lab_value']}`"
+        )
+        if conflict["severity"] == "KRİTİK":
+            st.error(message)
+        elif conflict["severity"] == "YÜKSEK":
+            st.warning(message)
+        else:
+            st.info(message)
+
+    detail_columns = st.columns(2)
+    with detail_columns[0]:
+        st.markdown("#### Modellerin ortaklaştığı noktalar")
+        if result["agreements"]:
+            for item in result["agreements"]:
+                st.markdown(f"- {item}")
+        else:
+            st.caption("Açık ortaklaşma tespit edilmedi.")
+    with detail_columns[1]:
+        st.markdown("#### Modellerin ayrıştığı noktalar")
+        if result["divergences"]:
+            for item in result["divergences"]:
+                st.markdown(f"- {item}")
+        else:
+            st.caption("Açık ayrışma tespit edilmedi.")
+
+    st.markdown("#### Eksik veriler")
+    st.info(", ".join(result["missing_data"]) if result["missing_data"] else "Eksik veri yok.")
+    st.markdown("#### Sınırlayıcı faktörler")
+    if result["limiting_factors"]:
+        for item in result["limiting_factors"]:
+            st.markdown(f"- {item}")
+    else:
+        st.caption("Sınırlayıcı faktör oluşmadı.")
+    st.caption("Model Tutarlılık Skoru yatırım veya alım skoru değildir; yalnızca deneysel model uyumunu gösterir.")
+    return result
+
+
+def render_yebora_lab() -> None:
+    if current_auth_user() != "user1":
+        return
+
+    with st.container(border=True):
+        st.markdown("### YEBORA LAB")
+        lab_tabs = st.tabs(
+            [
+                "Entry Timing Engine",
+                "Expected Return Engine",
+                "Critical Day Engine",
+                "Compare Engine",
+                "Debug",
+            ]
+        )
+        with lab_tabs[0]:
+            entry_result = render_entry_timing_lab()
+        with lab_tabs[1]:
+            expected_result = render_expected_return_v2_lab()
+        with lab_tabs[2]:
+            critical_result = render_critical_day_v2_lab(entry_result, expected_result)
+        with lab_tabs[3]:
+            validation_result = render_validation_lab()
+        with lab_tabs[4]:
+            if entry_result is not None:
+                st.markdown("#### Entry Timing — Ham özellikler")
+                debug_features = dict(entry_result["features"])
+                previous_close_resistance = debug_features.pop("previous_20_close_resistance", None)
+                debug_features["Önceki 20 Kapanış Direnci"] = previous_close_resistance
+                st.json(debug_features)
+            if expected_result is not None:
+                st.markdown("#### Expected Return V2 — Ham özellikler")
+                expected_features = dict(expected_result["features"])
+                previous_close_resistance = expected_features.pop("previous_20_close_resistance", None)
+                expected_features["Önceki 20 Kapanış Direnci"] = previous_close_resistance
+                st.json(expected_features)
+                st.markdown("#### Vade eşlemesi ve ara hesaplar")
+                st.json(expected_result["debug"])
+            if critical_result is not None:
+                st.markdown("#### Critical Day V2 — Ham girdiler ve ara hesaplar")
+                st.json(critical_result["debug"])
+            if validation_result is not None:
+                st.markdown("#### Validation Engine — Karşılaştırma ve skor detayları")
+                st.json(validation_result["debug"])
+            if entry_result is None and expected_result is None and critical_result is None and validation_result is None:
+                st.caption("Debug verisi için LAB motorlarından bir hisse seçin.")
+
+
 def render_dashboard_page() -> None:
+    render_yebora_lab()
     dashboard_theme_mode = st.session_state.get("theme_mode", "dark")
     bist_symbols = get_bist_symbols_or_stop()
 
