@@ -357,7 +357,10 @@ def has_pro_access() -> bool:
 
 
 def current_auth_user() -> str:
-    return str(st.session_state.get("auth_user", "")).strip().lower()
+    username = user_store.normalize_username(str(st.session_state.get("auth_user", "")))
+    if not is_authenticated() or username not in user_store.USERS:
+        return ""
+    return username
 
 
 def load_current_user_pro_data() -> None:

@@ -36,7 +36,10 @@ def configure_users(payload: Any) -> None:
         for username, value in payload.items():
             if not isinstance(value, Mapping) or not str(value.get("password", "")):
                 continue
-            configured[normalize_username(str(username))] = {
+            normalized = normalize_username(str(username))
+            if not normalized:
+                continue
+            configured[normalized] = {
                 "password": str(value["password"]),
                 "is_pro": bool(value.get("is_pro", False)),
             }
@@ -134,10 +137,15 @@ def is_pro_user(username: str) -> bool:
     return bool(user and user.get("is_pro", False))
 
 
-def user_data_dir(username: str) -> Path:
+def _require_known_username(username: str) -> str:
     normalized = normalize_username(username)
-    if normalized not in KNOWN_USERNAMES:
+    if not normalized or (normalized not in KNOWN_USERNAMES and normalized not in USERS):
         raise ValueError("Tanımsız kullanıcı.")
+    return normalized
+
+
+def user_data_dir(username: str) -> Path:
+    normalized = _require_known_username(username)
     path = DATA_ROOT / normalized
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -210,9 +218,7 @@ def save_user_list(username: str, file_name: str, rows: list[dict[str, Any]]) ->
 
 
 def load_user_portfolio_data(username: str) -> dict[str, list[dict[str, Any]]]:
-    normalized = normalize_username(username)
-    if normalized not in KNOWN_USERNAMES:
-        raise ValueError("Tanımsız kullanıcı.")
+    normalized = _require_known_username(username)
     if supabase_enabled():
         try:
             storage_ready = True
@@ -264,9 +270,7 @@ def save_user_portfolio_data(
     inception_history: list[dict[str, Any]] | None = None,
     inception_metadata: list[dict[str, Any]] | None = None,
 ) -> None:
-    normalized = normalize_username(username)
-    if normalized not in KNOWN_USERNAMES:
-        raise ValueError("Tanımsız kullanıcı.")
+    normalized = _require_known_username(username)
     snapshot = _json_safe({
         "open_positions": _validate_list_payload(open_positions, "open_positions"),
         "closed_trades": _validate_list_payload(closed_trades, "closed_trades"),
@@ -337,8 +341,8 @@ def save_ai_watchlist(username: str, watchlist: list[dict[str, Any]]) -> None:
 
 
 def load_simulation(username: str) -> dict[str, Any]:
+    normalized = _require_known_username(username)
     if supabase_enabled():
-        normalized = normalize_username(username)
         try:
             _rest("rpc/rollover_simulation_weeks", "POST", payload={})
             accounts = _rest("simulation_accounts", params={"username": f"eq.{normalized}", "select": "*"}).json()
@@ -370,8 +374,8 @@ def load_simulation(username: str) -> dict[str, Any]:
 
 
 def save_simulation(username: str, simulation: dict[str, Any]) -> None:
+    normalized = _require_known_username(username)
     if supabase_enabled() and simulation.get("week"):
-        normalized = normalize_username(username)
         week_key = str(simulation["week"])
         try:
             _rest("simulation_accounts", "POST", payload={"username": normalized, "week_key": week_key, "starting_cash": simulation.get("starting_cash", 10000), "cash": simulation.get("cash", 10000)}, prefer="resolution=merge-duplicates")

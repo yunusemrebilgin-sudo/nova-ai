@@ -37,11 +37,9 @@ class SupabasePortfolioBackend:
             row = self.rows.get(username)
             return FakeResponse([] if row is None else [row])
         if method == "POST":
-            self.rows[payload["username"]] = {
-                "open_positions": copy.deepcopy(payload["open_positions"]),
-                "closed_trades": copy.deepcopy(payload["closed_trades"]),
-                "ai_watchlist": copy.deepcopy(payload["ai_watchlist"]),
-            }
+            username = payload["username"]
+            row = self.rows.setdefault(username, {})
+            row.update({key: copy.deepcopy(value) for key, value in payload.items() if key != "username"})
             return FakeResponse(None)
         raise AssertionError(f"Unexpected method: {method}")
 
@@ -51,10 +49,16 @@ class UserPersistenceTests(unittest.TestCase):
         self.original_root = user_store.DATA_ROOT
         self.original_url = user_store.SUPABASE_URL
         self.original_key = user_store.SUPABASE_SERVICE_ROLE_KEY
+        self.original_users = copy.deepcopy(user_store.USERS)
+        user_store.configure_users({
+            "kullanici1": {"password": "existing-secret", "is_pro": True},
+            "user1": {"password": "new-user-secret", "is_pro": True},
+        })
 
     def tearDown(self):
         user_store.DATA_ROOT = self.original_root
         user_store.configure_supabase(self.original_url, self.original_key)
+        user_store.USERS = self.original_users
 
     def test_credentials_are_runtime_configured_not_hardcoded(self):
         source = Path(user_store.__file__).read_text(encoding="utf-8")
@@ -67,6 +71,77 @@ class UserPersistenceTests(unittest.TestCase):
         users = MappingProxyType({"kullanici1": MappingProxyType({"password": "runtime-secret", "is_pro": True})})
         user_store.configure_users(users)
         self.assertIsNotNone(user_store.authenticate("kullanici1", "runtime-secret"))
+
+    def test_blank_secret_username_is_not_configured(self):
+        user_store.configure_users({"  ": {"password": "runtime-secret", "is_pro": True}})
+        self.assertNotIn("", user_store.USERS)
+
+    def test_new_configured_pro_user_without_supabase_row_gets_empty_snapshot(self):
+        backend = SupabasePortfolioBackend()
+        user_store.configure_supabase("https://example.supabase.co", "sb_secret_test")
+        with patch("user_store._rest", side_effect=backend.request):
+            loaded = user_store.load_user_portfolio_data("user1")
+
+        self.assertTrue(user_store.authenticate("user1", "new-user-secret")["is_pro"])
+        for key in user_store.EMPTY_PORTFOLIO_DATA:
+            self.assertEqual(loaded[key], [])
+        self.assertFalse(any(call[1] == "POST" for call in backend.calls))
+
+    def test_empty_and_unconfigured_usernames_remain_rejected(self):
+        for username in ("", "   ", "not-in-secrets"):
+            with self.subTest(username=username):
+                with self.assertRaises(ValueError):
+                    user_store.load_user_portfolio_data(username)
+                with self.assertRaises(ValueError):
+                    user_store.load_simulation(username)
+
+    def test_unauthenticated_session_cannot_supply_persistence_username(self):
+        state = self.logout_state(is_authenticated=False, auth_user="user1")
+        with (
+            patch.object(app.st, "session_state", state),
+            patch.object(user_store, "load_user_portfolio_data") as load_data,
+        ):
+            self.assertEqual(app.current_auth_user(), "")
+            app.load_current_user_pro_data()
+
+        load_data.assert_not_called()
+
+    def test_new_user_can_save_after_first_load_and_read_snapshot_again(self):
+        backend = SupabasePortfolioBackend()
+        user_store.configure_supabase("https://example.supabase.co", "sb_secret_test")
+        with patch("user_store._rest", side_effect=backend.request):
+            initial = user_store.load_user_portfolio_data("user1")
+            user_store.save_user_portfolio_data(
+                "user1", [{"id": "user1-position"}], [], [], [], [], []
+            )
+            reloaded = user_store.load_user_portfolio_data("user1")
+
+        self.assertEqual(initial["open_positions"], [])
+        self.assertEqual(reloaded["open_positions"], [{"id": "user1-position"}])
+        post = next(call for call in backend.calls if call[1] == "POST")
+        self.assertEqual(post[4], "resolution=merge-duplicates")
+
+    def test_new_and_existing_user_snapshots_remain_isolated(self):
+        backend = SupabasePortfolioBackend()
+        backend.rows["kullanici1"] = {
+            "open_positions": [{"id": "existing-position"}],
+            "closed_trades": [],
+            "ai_watchlist": [],
+            "schema_version": 2,
+        }
+        user_store.configure_supabase("https://example.supabase.co", "sb_secret_test")
+        with patch("user_store._rest", side_effect=backend.request):
+            existing_before = user_store.load_user_portfolio_data("kullanici1")
+            user_store.save_user_portfolio_data(
+                "user1", [{"id": "new-user-position"}], [], [], [], [], []
+            )
+            existing_after = user_store.load_user_portfolio_data("kullanici1")
+            new_user = user_store.load_user_portfolio_data("user1")
+
+        self.assertEqual(existing_before["open_positions"], [{"id": "existing-position"}])
+        self.assertEqual(existing_after["open_positions"], [{"id": "existing-position"}])
+        self.assertEqual(new_user["open_positions"], [{"id": "new-user-position"}])
+        self.assertEqual(backend.rows["kullanici1"]["schema_version"], 2)
 
     def logout_state(self, **overrides):
         state = SessionState(
