@@ -501,7 +501,7 @@ def render_app_header() -> None:
     with spacer_col:
         st.markdown('<div class="nova-header-spacer" aria-hidden="true"></div>', unsafe_allow_html=True)
     with brand_col:
-        if st.button("NOVA AI", key="brand_refresh", use_container_width=True):
+        if st.button("YEBORA", key="brand_refresh", use_container_width=True):
             load_market_data.clear()
             load_one_month_close_data.clear()
             load_live_spot_quote.clear()
@@ -1579,14 +1579,14 @@ def render_value_card(title: str, value: str, note: str = "") -> None:
 def render_decision_center(
     decision: dict[str, object],
 ) -> None:
-    st.markdown("### NOVA AI DECISION CENTER")
+    st.markdown("### YEBORA DECISION CENTER")
     st.markdown(
         f"""
         <div class="nova-signal {decision["signal_class"]}">
-            <div class="nova-card-title">NOVA AI DECISION CENTER</div>
+            <div class="nova-card-title">YEBORA DECISION CENTER</div>
             <div class="nova-card-value">Ana Karar: {decision["main_decision"]}</div>
             <div class="nova-card-note">
-                Nova AI Güven Endeksi: %{decision["confidence"]}<br>
+                YEBORA Güven Endeksi: %{decision["confidence"]}<br>
                 İşlem Kalitesi: {decision["quality"]}<br>
                 İşlem Vadesi: {decision["horizon"]}<br>
                 Beklenen Ortalama Taşıma Süresi: {decision["holding_period"]}<br>
@@ -3003,7 +3003,7 @@ def render_smart_scanner_page() -> None:
     if scanner_add_notice:
         st.success(scanner_add_notice)
     st.markdown(
-        '<div class="nova-subtitle">BIST hisselerini Nova AI karar motoru ile filtreler ve fırsat listesini oluşturur.</div>',
+        '<div class="nova-subtitle">BIST hisselerini YEBORA karar motoru ile filtreler ve fırsat listesini oluşturur.</div>',
         unsafe_allow_html=True,
     )
     if st.session_state.get("smart_scanner_calc_version") != SMART_SCANNER_CALC_VERSION:
@@ -3351,7 +3351,7 @@ def render_dashboard_page() -> None:
         with kpi_col_4:
             render_value_card("Taşıma Süresi", str(selected_trade_row["Beklenen Taşıma Süresi"]))
 
-        st.markdown("#### NOVA AI Karar Özeti")
+        st.markdown("#### YEBORA Karar Özeti")
         nova_decision.render_premium_decision_center(
             decision_payload,
             radar_scores_v12,
@@ -3757,7 +3757,7 @@ def collect_position_notifications(positions: list[dict[str, object]]) -> list[d
                 {
                     "key": f"{position_id}:{today_key}:{alert}",
                     "symbol": symbol,
-                    "title": f"NOVA AI · {symbol}",
+                    "title": f"YEBORA · {symbol}",
                     "message": alert,
                     "severity": severity,
                 }
@@ -5099,8 +5099,8 @@ def render_page(page: str) -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="NOVA AI",
-        page_icon="N",
+        page_title="YEBORA",
+        page_icon="Y",
         layout="wide",
         initial_sidebar_state="collapsed",
     )

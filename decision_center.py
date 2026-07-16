@@ -301,7 +301,7 @@ def render_premium_decision_center(
     center_html = f"""
     <div class="stack">
         <div class="{component_class}">
-            <div class="label">NOVA AI DECISION CENTER</div>
+            <div class="label">YEBORA DECISION CENTER</div>
             <div class="value">{escape(title)}</div>
             <div class="note">
                 İşlem Kalitesi: {escape(str(decision["quality"]))}<br>
@@ -326,7 +326,7 @@ def render_premium_decision_center(
     compact_center_html = f"""
     <div class="stack">
         <div class="{component_class}">
-            <div class="label">NOVA AI DECISION CENTER</div>
+            <div class="label">YEBORA DECISION CENTER</div>
             <div class="value">{escape(title)}</div>
             <div class="note">
                 İşlem Kalitesi: {escape(str(decision["quality"]))}<br>
