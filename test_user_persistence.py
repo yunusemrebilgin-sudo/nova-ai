@@ -63,6 +63,60 @@ class UserPersistenceTests(unittest.TestCase):
         user_store.configure_users(users)
         self.assertIsNotNone(user_store.authenticate("kullanici1", "runtime-secret"))
 
+    def test_logout_clears_user_session_deletes_cookie_and_reruns(self):
+        class SessionState(dict):
+            __getattr__ = dict.__getitem__
+            __setattr__ = dict.__setitem__
+
+        state = SessionState(
+            is_authenticated=True,
+            auth_user="user1",
+            yeb_pro_active=True,
+            yeb_data_user="user1",
+            yeb_persistent_data_loaded=True,
+            yeb_pro_module="Trade Journal",
+            yeb_open_positions=[{"symbol": "TEST.IS"}],
+            yeb_closed_trades=[{"symbol": "OLD.IS"}],
+            yeb_ai_watchlist=[{"symbol": "WATCH.IS"}],
+            yeb_simulation={"balance": 1000},
+            inception_active=[{"symbol": "TEST.IS"}],
+            inception_history=[{"symbol": "OLD.IS"}],
+            inception_metadata=[{"kind": "update"}],
+            login_username="user1",
+            login_password="temporary-password",
+            inception_storage_ready=True,
+            inception_storage_mode="columns",
+            inception_visit_id="visit",
+            inception_last_attempt_visit="attempt",
+            portfolio_ranked_results={"private": True},
+            portfolio_results_cache_key="user1-cache",
+            selected_page=app.PUBLIC_DASHBOARD_PAGE,
+        )
+        with (
+            patch.object(app.st, "session_state", state),
+            patch.object(app, "COOKIE_MANAGER") as cookie_manager,
+            patch.object(app.st, "rerun") as rerun,
+            patch.object(user_store, "save_user_portfolio_data") as save_data,
+        ):
+            cookie_manager.delete.side_effect = KeyError(app.AUTH_COOKIE_NAME)
+            app.logout_current_user()
+
+        self.assertFalse(state["is_authenticated"])
+        self.assertEqual(state["auth_user"], "")
+        self.assertFalse(state["yeb_pro_active"])
+        self.assertEqual(state["yeb_data_user"], "")
+        self.assertFalse(state["yeb_persistent_data_loaded"])
+        self.assertEqual(state["yeb_pro_module"], app.DEFAULT_PRO_MODULE)
+        for key in ("yeb_open_positions", "yeb_closed_trades", "yeb_ai_watchlist", "inception_active", "inception_history", "inception_metadata"):
+            self.assertEqual(state[key], [])
+        self.assertEqual(state["yeb_simulation"], {})
+        for key in ("login_username", "login_password", "inception_storage_ready", "inception_storage_mode", "inception_visit_id", "inception_last_attempt_visit", "portfolio_ranked_results", "portfolio_results_cache_key"):
+            self.assertNotIn(key, state)
+        self.assertEqual(state["selected_page"], app.SMART_SCANNER_PAGE)
+        cookie_manager.delete.assert_called_once_with(app.AUTH_COOKIE_NAME)
+        rerun.assert_called_once_with()
+        save_data.assert_not_called()
+
     def test_inception_compat_storage_preserves_watchlist_and_round_trips(self):
         snapshot = {
             "ai_watchlist": [{"symbol": "LEGACY.IS"}],

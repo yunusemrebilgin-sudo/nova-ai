@@ -440,13 +440,33 @@ def logout_current_user() -> None:
     st.session_state.yeb_pro_active = False
     st.session_state.yeb_data_user = ""
     st.session_state.yeb_persistent_data_loaded = False
+    st.session_state.yeb_pro_module = DEFAULT_PRO_MODULE
     st.session_state.yeb_open_positions = []
     st.session_state.yeb_closed_trades = []
     st.session_state.yeb_ai_watchlist = []
+    st.session_state.yeb_simulation = {}
     st.session_state.inception_active = []
     st.session_state.inception_history = []
     st.session_state.inception_metadata = []
-    COOKIE_MANAGER.delete(AUTH_COOKIE_NAME)
+    for key in (
+        "login_username",
+        "login_password",
+        "inception_storage_ready",
+        "inception_storage_mode",
+        "inception_visit_id",
+        "inception_last_attempt_visit",
+        "portfolio_ranked_results",
+        "portfolio_results_cache_key",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state.selected_page = SMART_SCANNER_PAGE
+    try:
+        COOKIE_MANAGER.delete(AUTH_COOKIE_NAME)
+    except KeyError:
+        # CookieManager emits the browser delete before removing its cached copy.
+        # A stale/missing cached key must not prevent the logout rerun.
+        pass
+    st.rerun()
 
 
 @st.cache_data(show_spinner=False)
@@ -531,7 +551,6 @@ def render_app_header() -> None:
             )
             if is_authenticated() and st.button("Çıkış", key="header_logout", use_container_width=True):
                 logout_current_user()
-                st.rerun()
 
 
 def render_top_navigation() -> str:
